@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "switchboard",
+  "displayName": "Switchboard",
+  "version": "0.1.0",
+  "description": "CLI-managed event routing and durable waits for AI agents.",
+  "author": {
+    "name": "Maciej Cielecki",
+    "url": "https://github.com/cielecki"
+  },
+  "homepage": "https://github.com/cielecki/switchboard",
+  "repository": "https://github.com/cielecki/switchboard",
+  "license": "MIT",
+  "keywords": ["agents", "events", "routing", "observability"]
+}

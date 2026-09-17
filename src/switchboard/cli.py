@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sqlite3
+import sys
+from typing import Any
+
+from . import core
+from .db import Database
+from .web import serve
+
+
+def json_object(value: str) -> dict[str, Any]:
+    try:
+        result = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if not isinstance(result, dict):
+        raise argparse.ArgumentTypeError("value must be a JSON object")
+    return result
+
+
+def key_value(value: str) -> tuple[str, str]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("expected FIELD=VALUE")
+    key, item = value.split("=", 1)
+    if not key:
+        raise argparse.ArgumentTypeError("field cannot be empty")
+    return key, item
+
+
+def add_list_filter(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--state")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="switchboard", description=__doc__)
+    parser.add_argument("--db", help="SQLite database path (default: SWITCHBOARD_DB or XDG data)")
+    parser.add_argument("--json", action="store_true", help="emit a stable JSON response")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    commands.add_parser("init", help="initialize the database")
+    commands.add_parser("status", help="show store and queue counts")
+
+    space = commands.add_parser("space", help="manage spaces").add_subparsers(dest="verb", required=True)
+    create = space.add_parser("create")
+    create.add_argument("id")
+    create.add_argument("--name")
+    space.add_parser("list")
+
+    source = commands.add_parser("source", help="manage sources").add_subparsers(dest="verb", required=True)
+    register = source.add_parser("register")
+    register.add_argument("id")
+    register.add_argument("--space", required=True)
+    register.add_argument("--kind", required=True)
+    register.add_argument("--config", type=json_object, default={})
+    source.add_parser("list")
+
+    wait = commands.add_parser("wait", help="manage durable waits").add_subparsers(dest="verb", required=True)
+    create = wait.add_parser("create")
+    create.add_argument("--space", required=True)
+    create.add_argument("--consumer", required=True)
+    create.add_argument("--source")
+    create.add_argument("--event-type")
+    create.add_argument("--attribute", action="append", type=key_value, default=[])
+    create.add_argument("--contains", action="append", type=key_value, default=[])
+    create.add_argument("--purpose", default="")
+    create.add_argument("--repeat", action="store_true")
+    create.add_argument("--expires")
+    listing = wait.add_parser("list")
+    add_list_filter(listing)
+    cancel = wait.add_parser("cancel")
+    cancel.add_argument("id")
+
+    event = commands.add_parser("event", help="emit and inspect events").add_subparsers(dest="verb", required=True)
+    emit = event.add_parser("emit")
+    emit.add_argument("--source", required=True)
+    emit.add_argument("--external-id", required=True)
+    emit.add_argument("--type", required=True)
+    emit.add_argument("--attributes", type=json_object, default={})
+    emit.add_argument("--occurred-at")
+    listing = event.add_parser("list")
+    listing.add_argument("--limit", type=int, default=50)
+    show = event.add_parser("show")
+    show.add_argument("id")
+
+    delivery = commands.add_parser("delivery", help="inspect and acknowledge deliveries").add_subparsers(dest="verb", required=True)
+    listing = delivery.add_parser("list")
+    add_list_filter(listing)
+    acknowledge = delivery.add_parser("ack")
+    acknowledge.add_argument("id")
+
+    server = commands.add_parser("serve", help="serve the read-only operations UI")
+    server.add_argument("--host", default="127.0.0.1")
+    server.add_argument("--port", type=int, default=8765)
+    return parser
+
+
+def dispatch(args: argparse.Namespace, db: Database) -> Any:
+    if args.command == "init":
+        db.initialize()
+        return {"database": str(db.path), "schema_version": 1}
+    if args.command == "status":
+        return core.status(db)
+    if args.command == "space":
+        if args.verb == "create":
+            return core.create_space(db, args.id, args.name)
+        return core.list_spaces(db)
+    if args.command == "source":
+        if args.verb == "register":
+            return core.register_source(db, args.id, args.space, args.kind, args.config)
+        return core.list_sources(db)
+    if args.command == "wait":
+        if args.verb == "create":
+            predicate = {
+                key: value
+                for key, value in (("source_id", args.source), ("event_type", args.event_type))
+                if value is not None
+            }
+            if args.attribute:
+                predicate["attributes"] = dict(args.attribute)
+            if args.contains:
+                predicate["contains"] = dict(args.contains)
+            if not predicate:
+                raise ValueError("wait predicate cannot be empty")
+            return core.create_wait(
+                db,
+                space_id=args.space,
+                consumer=args.consumer,
+                predicate=predicate,
+                purpose=args.purpose,
+                repeating=args.repeat,
+                expires_at=args.expires,
+            )
+        if args.verb == "cancel":
+            return core.cancel_wait(db, args.id)
+        return core.list_waits(db, args.state)
+    if args.command == "event":
+        if args.verb == "emit":
+            return core.emit_event(
+                db,
+                source_id=args.source,
+                external_id=args.external_id,
+                event_type=args.type,
+                attributes=args.attributes,
+                occurred_at=args.occurred_at,
+            )
+        if args.verb == "show":
+            return core.get_event(db, args.id)
+        return core.list_events(db, args.limit)
+    if args.command == "delivery":
+        if args.verb == "ack":
+            return core.acknowledge_delivery(db, args.id)
+        return core.list_deliveries(db, args.state)
+    if args.command == "serve":
+        serve(db, args.host, args.port)
+        return None
+    raise ValueError(f"unsupported command: {args.command}")
+
+
+def print_result(value: Any, machine: bool) -> None:
+    if value is None:
+        return
+    if machine:
+        print(json.dumps({"ok": True, "data": value}, ensure_ascii=False, sort_keys=True))
+        return
+    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    db = Database(args.db)
+    try:
+        result = dispatch(args, db)
+        print_result(result, args.json)
+        return 0
+    except (ValueError, sqlite3.IntegrityError) as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
+        else:
+            print(f"switchboard: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

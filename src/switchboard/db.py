@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Iterator
+
+
+SCHEMA = """
+PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS spaces (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sources (
+    id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'enabled',
+    config_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    external_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    occurred_at TEXT,
+    observed_at TEXT NOT NULL,
+    attributes_json TEXT NOT NULL,
+    UNIQUE(source_id, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS waits (
+    id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    consumer TEXT NOT NULL,
+    predicate_json TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL CHECK(mode IN ('one-shot', 'repeating')),
+    state TEXT NOT NULL CHECK(state IN ('active', 'matched', 'cancelled', 'expired')),
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    matched_event_id TEXT REFERENCES events(id)
+);
+
+CREATE TABLE IF NOT EXISTS matches (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES events(id),
+    wait_id TEXT NOT NULL REFERENCES waits(id),
+    matched_at TEXT NOT NULL,
+    reason_json TEXT NOT NULL,
+    UNIQUE(event_id, wait_id)
+);
+
+CREATE TABLE IF NOT EXISTS deliveries (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES events(id),
+    wait_id TEXT NOT NULL REFERENCES waits(id),
+    consumer TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL CHECK(state IN ('pending', 'acknowledged', 'failed', 'cancelled')),
+    created_at TEXT NOT NULL,
+    acknowledged_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor TEXT NOT NULL,
+    command TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_observed ON events(observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_waits_state ON waits(state, space_id);
+CREATE INDEX IF NOT EXISTS idx_deliveries_state ON deliveries(state, created_at);
+
+INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '1');
+"""
+
+
+def default_db_path() -> Path:
+    configured = os.environ.get("SWITCHBOARD_DB")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    return (root / "switchboard" / "switchboard.sqlite3").resolve()
+
+
+class Database:
+    def __init__(self, path: str | Path | None = None):
+        self.path = Path(path).expanduser().resolve() if path else default_db_path()
+
+    def connect(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        return connection
+
+    def initialize(self) -> None:
+        with self.connect() as connection:
+            connection.executescript(SCHEMA)
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        connection = self.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            yield connection
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def rows(self, query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        self.initialize()
+        with self.connect() as connection:
+            return [dict(row) for row in connection.execute(query, params).fetchall()]
+
+    def row(self, query: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+        rows = self.rows(query, params)
+        return rows[0] if rows else None
+
+
+def decode_json_fields(record: dict[str, Any], *fields: str) -> dict[str, Any]:
+    result = dict(record)
+    for field in fields:
+        raw = result.pop(field, None)
+        if raw is not None:
+            result[field.removesuffix("_json")] = json.loads(raw)
+    return result
