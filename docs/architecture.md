@@ -25,6 +25,9 @@ owns no mutations. Delivery adapters wake agent hosts without taking ownership o
 - **Route:** ordered deterministic policy directing an event to a processor or destination.
 - **Processor outcome:** structured record of what a specialized workflow changed.
 
+The [source adapter contract](adapters.md) is the only ingestion boundary. Adapters produce
+snapshots; the core validates, records health, deduplicates events, and evaluates waits.
+
 ## Initial predicate language
 
 Wait predicates are conjunctions over allowlisted facts:
@@ -44,3 +47,7 @@ Existing watcher-based systems first publish into Switchboard in shadow mode. On
 deduplication, health, and delivery evidence agree with their existing stores, Switchboard can take
 over supervision. Source-specific business policy remains in processor adapters rather than being
 folded into the generic core.
+
+Delivery follows the same split. A broker accepting a stable request changes a delivery from
+`pending` to `accepted`; only the destination consumer can change it to `acknowledged` after the
+matched work is complete.

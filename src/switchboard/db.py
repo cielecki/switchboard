@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
-
+from typing import Any
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -72,9 +72,41 @@ CREATE TABLE IF NOT EXISTS deliveries (
     wait_id TEXT NOT NULL REFERENCES waits(id),
     consumer TEXT NOT NULL,
     idempotency_key TEXT NOT NULL UNIQUE,
-    state TEXT NOT NULL CHECK(state IN ('pending', 'acknowledged', 'failed', 'cancelled')),
+    state TEXT NOT NULL CHECK(state IN ('pending', 'accepted', 'acknowledged', 'failed', 'cancelled')),
     created_at TEXT NOT NULL,
-    acknowledged_at TEXT
+    accepted_at TEXT,
+    acknowledged_at TEXT,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS delivery_attempts (
+    id TEXT PRIMARY KEY,
+    delivery_id TEXT NOT NULL REFERENCES deliveries(id),
+    request_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('attempting', 'accepted', 'failed')),
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    detail TEXT
+);
+
+CREATE TABLE IF NOT EXISTS source_health (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    state TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    observed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS adapter_runs (
+    id TEXT PRIMARY KEY,
+    adapter TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('running', 'completed', 'failed')),
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    discovered_sources INTEGER NOT NULL DEFAULT 0,
+    emitted_events INTEGER NOT NULL DEFAULT 0,
+    deduplicated_events INTEGER NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -90,8 +122,27 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_events_observed ON events(observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_waits_state ON waits(state, space_id);
 CREATE INDEX IF NOT EXISTS idx_deliveries_state ON deliveries(state, created_at);
+CREATE INDEX IF NOT EXISTS idx_delivery_attempts_delivery ON delivery_attempts(delivery_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_source_health_source ON source_health(source_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_adapter_runs_started ON adapter_runs(started_at DESC);
 
-INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '1');
+INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '2');
+"""
+
+
+DELIVERIES_V2 = """
+CREATE TABLE deliveries (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES events(id),
+    wait_id TEXT NOT NULL REFERENCES waits(id),
+    consumer TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL CHECK(state IN ('pending', 'accepted', 'acknowledged', 'failed', 'cancelled')),
+    created_at TEXT NOT NULL,
+    accepted_at TEXT,
+    acknowledged_at TEXT,
+    last_error TEXT
+);
 """
 
 
@@ -116,6 +167,24 @@ class Database:
 
     def initialize(self) -> None:
         with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='deliveries'"
+            ).fetchone()
+            if existing is not None and "'accepted'" not in existing["sql"]:
+                connection.executescript(
+                    "ALTER TABLE deliveries RENAME TO deliveries_v1;\n"
+                    + DELIVERIES_V2
+                    + """
+                    INSERT INTO deliveries(
+                        id, event_id, wait_id, consumer, idempotency_key, state,
+                        created_at, acknowledged_at
+                    )
+                    SELECT id, event_id, wait_id, consumer, idempotency_key, state,
+                           created_at, acknowledged_at
+                    FROM deliveries_v1;
+                    DROP TABLE deliveries_v1;
+                    """
+                )
             connection.executescript(SCHEMA)
 
     @contextmanager

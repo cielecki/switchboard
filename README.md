@@ -15,11 +15,15 @@ The first vertical slice provides:
 - deterministic wait predicates;
 - pending delivery records when waits match;
 - JSON output suitable for agent use;
-- a local read-only status dashboard.
+- a local read-only status dashboard;
+- a versioned JSON adapter contract and adapter-run history;
+- a read-only shadow adapter for existing ingest stores;
+- delivery through the existing local `chats` broker, with acceptance and completion tracked
+  separately.
 
-Source watchers, chat-host delivery adapters, routing tables, processor outcomes, and service
-installation are the next milestones. Existing capture and lead-processing systems can integrate
-as adapters before any migration or replacement.
+Long-running source supervision, routing tables, processor outcomes, and service installation are
+the next milestones. Existing capture and lead-processing systems can integrate as adapters before
+any migration or replacement.
 
 ## Try it
 
@@ -34,7 +38,7 @@ pip install -e .
 switchboard init
 switchboard space create demo --name "Demo"
 switchboard source register demo-mail --space demo --kind mail
-switchboard wait create --space demo --consumer chat:example \
+switchboard wait create --space demo --consumer chat:codex:example-task-id \
   --source demo-mail --event-type message.received --attribute sender=person@example.com
 switchboard event emit --source demo-mail --external-id msg-1 \
   --type message.received --attributes '{"sender":"person@example.com","subject":"Hello"}'
@@ -52,6 +56,28 @@ switchboard --json status
 
 By default, data lives at `~/.local/share/switchboard/switchboard.sqlite3`. Override it with
 `SWITCHBOARD_DB` or the global `--db` option. Plugin updates never own or replace that state.
+
+## Adapters and delivery
+
+Observe an existing ingest store without changing or synchronizing it:
+
+```bash
+switchboard --json adapter ingest-shadow --status-script /absolute/path/to/ingest/status.py
+```
+
+The adapter calls only `status.py --all --json`, auto-registers the observed ingest sources, and
+stores immutable status observations. It refuses stale or failed status reads.
+
+Deliver a matched wait through the existing local chats broker:
+
+```bash
+switchboard --json delivery dispatch <delivery-id> \
+  --relay /absolute/path/to/chats/send-message.py
+```
+
+Broker acceptance changes the delivery to `accepted`, not `acknowledged`. The destination task
+receives exact CLI commands for inspecting and acknowledging the delivery after completing its
+work. See [the adapter contract](docs/adapters.md) for third-party adapters.
 
 ## Plugin
 

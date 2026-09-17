@@ -7,7 +7,6 @@ from urllib.parse import urlparse
 from . import core
 from .db import Database
 
-
 HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -32,8 +31,9 @@ HTML = """<!doctype html>
 <body><main>
   <header><div><h1>Switchboard</h1><div class="muted">Read-only operations view</div></div><div id="db" class="muted"></div></header>
   <div id="counts" class="grid"></div>
-  <section><h2>Pending deliveries</h2><div id="deliveries"></div></section>
+  <section><h2>Open deliveries</h2><div id="deliveries"></div></section>
   <section><h2>Active waits</h2><div id="waits"></div></section>
+  <section><h2>Adapter runs</h2><div id="adapters"></div></section>
   <section><h2>Recent events</h2><div id="events"></div></section>
 </main><script>
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -43,11 +43,12 @@ function table(rows, cols) {
     rows.map(r=>'<tr>'+cols.map(c=>'<td><code>'+esc(typeof r[c]==='object'?JSON.stringify(r[c]):r[c])+'</code></td>').join('')+'</tr>').join('')+'</tbody></table>';
 }
 async function load() {
-  const [status, deliveries, waits, events] = await Promise.all(['/api/status','/api/deliveries','/api/waits','/api/events'].map(u=>fetch(u).then(r=>r.json())));
+  const [status, deliveries, waits, adapters, events] = await Promise.all(['/api/status','/api/deliveries','/api/waits','/api/adapters','/api/events'].map(u=>fetch(u).then(r=>r.json())));
   document.querySelector('#db').textContent = status.database;
   document.querySelector('#counts').innerHTML = Object.entries(status.counts).map(([k,v])=>`<div class="card"><div class="muted">${esc(k.replaceAll('_',' '))}</div><div class="value">${v}</div></div>`).join('');
-  document.querySelector('#deliveries').innerHTML = table(deliveries.filter(x=>x.state==='pending'), ['id','consumer','event_id','created_at']);
+  document.querySelector('#deliveries').innerHTML = table(deliveries.filter(x=>['pending','accepted'].includes(x.state)), ['id','state','consumer','event_id','created_at']);
   document.querySelector('#waits').innerHTML = table(waits.filter(x=>x.state==='active'), ['id','consumer','purpose','predicate','created_at']);
+  document.querySelector('#adapters').innerHTML = table(adapters, ['id','adapter','state','discovered_sources','emitted_events','deduplicated_events','started_at']);
   document.querySelector('#events').innerHTML = table(events, ['id','source_id','event_type','external_id','observed_at']);
 }
 load(); setInterval(load, 5000);
@@ -65,7 +66,7 @@ def handler_for(db: Database) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             path = urlparse(self.path).path
             try:
                 if path == "/":
@@ -83,15 +84,16 @@ def handler_for(db: Database) -> type[BaseHTTPRequestHandler]:
                     "/api/deliveries": lambda: core.list_deliveries(db),
                     "/api/sources": lambda: core.list_sources(db),
                     "/api/spaces": lambda: core.list_spaces(db),
+                    "/api/adapters": lambda: core.list_adapter_runs(db),
                 }
                 if path in endpoints:
                     self.send_json(endpoints[path]())
                     return
                 self.send_json({"error": "not found"}, status=404)
-            except Exception as exc:  # pragma: no cover - final HTTP boundary
+            except Exception as exc:  # noqa: BLE001  # pragma: no cover - final HTTP boundary
                 self.send_json({"error": str(exc)}, status=500)
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             self.send_json({"error": "web interface is read-only; use the switchboard CLI"}, status=405)
 
         def log_message(self, format: str, *args: object) -> None:

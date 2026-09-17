@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
+from pathlib import Path
 from typing import Any
 
 from . import core
+from .adapters import run_command_adapter, run_ingest_shadow
 from .db import Database
 from .web import serve
 
@@ -18,6 +21,18 @@ def json_object(value: str) -> dict[str, Any]:
         raise argparse.ArgumentTypeError(str(exc)) from exc
     if not isinstance(result, dict):
         raise argparse.ArgumentTypeError("value must be a JSON object")
+    return result
+
+
+def json_string_array(value: str) -> list[str]:
+    try:
+        result = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if not isinstance(result, list) or not result or not all(
+        isinstance(item, str) and item for item in result
+    ):
+        raise argparse.ArgumentTypeError("value must be a non-empty JSON array of strings")
     return result
 
 
@@ -57,6 +72,21 @@ def build_parser() -> argparse.ArgumentParser:
     register.add_argument("--config", type=json_object, default={})
     source.add_parser("list")
 
+    adapter = commands.add_parser("adapter", help="run and inspect source adapters").add_subparsers(
+        dest="verb", required=True
+    )
+    run = adapter.add_parser("run", help="apply one external JSON adapter snapshot")
+    run.add_argument("--name", required=True)
+    run.add_argument("--command-json", required=True, type=json_string_array)
+    run.add_argument("--timeout", type=int, default=120)
+    ingest = adapter.add_parser("ingest-shadow", help="observe ingest through status.py")
+    ingest.add_argument("--status-script", required=True)
+    ingest.add_argument("--python", default=sys.executable)
+    ingest.add_argument("--space", default="personal-ingest")
+    ingest.add_argument("--timeout", type=int, default=120)
+    runs = adapter.add_parser("runs", help="show recent adapter runs")
+    runs.add_argument("--limit", type=int, default=50)
+
     wait = commands.add_parser("wait", help="manage durable waits").add_subparsers(dest="verb", required=True)
     create = wait.add_parser("create")
     create.add_argument("--space", required=True)
@@ -88,6 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
     delivery = commands.add_parser("delivery", help="inspect and acknowledge deliveries").add_subparsers(dest="verb", required=True)
     listing = delivery.add_parser("list")
     add_list_filter(listing)
+    show = delivery.add_parser("show")
+    show.add_argument("id")
+    dispatch_delivery = delivery.add_parser("dispatch")
+    dispatch_delivery.add_argument("id")
+    dispatch_delivery.add_argument("--relay", default=os.environ.get("SWITCHBOARD_CHATS_RELAY"))
+    dispatch_delivery.add_argument("--activate-inactive", action="store_true")
+    dispatch_delivery.add_argument("--timeout", type=int, default=30)
     acknowledge = delivery.add_parser("ack")
     acknowledge.add_argument("id")
 
@@ -100,7 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
 def dispatch(args: argparse.Namespace, db: Database) -> Any:
     if args.command == "init":
         db.initialize()
-        return {"database": str(db.path), "schema_version": 1}
+        return {"database": str(db.path), "schema_version": 2}
     if args.command == "status":
         return core.status(db)
     if args.command == "space":
@@ -111,6 +148,23 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
         if args.verb == "register":
             return core.register_source(db, args.id, args.space, args.kind, args.config)
         return core.list_sources(db)
+    if args.command == "adapter":
+        if args.verb == "run":
+            return run_command_adapter(
+                db,
+                args.command_json,
+                adapter_name=args.name,
+                timeout=args.timeout,
+            )
+        if args.verb == "ingest-shadow":
+            return run_ingest_shadow(
+                db,
+                status_script=args.status_script,
+                python=args.python,
+                space_id=args.space,
+                timeout=args.timeout,
+            )
+        return core.list_adapter_runs(db, args.limit)
     if args.command == "wait":
         if args.verb == "create":
             predicate = {
@@ -150,6 +204,19 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
             return core.get_event(db, args.id)
         return core.list_events(db, args.limit)
     if args.command == "delivery":
+        if args.verb == "show":
+            return core.get_delivery(db, args.id)
+        if args.verb == "dispatch":
+            if not args.relay:
+                raise ValueError("pass --relay or set SWITCHBOARD_CHATS_RELAY")
+            return core.dispatch_delivery(
+                db,
+                args.id,
+                relay=args.relay,
+                cli_command=own_cli_command(),
+                activate_inactive=args.activate_inactive,
+                timeout=args.timeout,
+            )
         if args.verb == "ack":
             return core.acknowledge_delivery(db, args.id)
         return core.list_deliveries(db, args.state)
@@ -157,6 +224,16 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
         serve(db, args.host, args.port)
         return None
     raise ValueError(f"unsupported command: {args.command}")
+
+
+def own_cli_command() -> list[str]:
+    configured = os.environ.get("SWITCHBOARD_CLI")
+    if configured:
+        return [configured]
+    bundled = Path(__file__).resolve().parents[2] / "bin" / "switchboard"
+    if bundled.is_file():
+        return [str(bundled)]
+    return [sys.executable, "-m", "switchboard.cli"]
 
 
 def print_result(value: Any, machine: bool) -> None:
