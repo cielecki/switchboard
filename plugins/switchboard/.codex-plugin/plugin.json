@@ -1,6 +1,6 @@
 {
   "name": "switchboard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "CLI-managed event routing and durable waits for AI agents.",
   "author": {
     "name": "Maciej Cielecki"

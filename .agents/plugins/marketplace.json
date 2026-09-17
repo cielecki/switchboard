@@ -1,0 +1,20 @@
+{
+  "name": "switchboard",
+  "interface": {
+    "displayName": "Switchboard"
+  },
+  "plugins": [
+    {
+      "name": "switchboard",
+      "source": {
+        "source": "local",
+        "path": "./plugins/switchboard"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-switchboard"
-version = "0.2.0"
+version = "0.2.1"
 description = "CLI-managed event routing and durable waits for AI agents."
 readme = "README.md"
 license = "MIT"
@@ -27,4 +27,4 @@ Repository = "https://github.com/cielecki/switchboard"
 Issues = "https://github.com/cielecki/switchboard/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/switchboard"]
+packages = ["plugins/switchboard/src/switchboard"]

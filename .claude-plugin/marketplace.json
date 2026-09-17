@@ -1,0 +1,24 @@
+{
+  "name": "switchboard",
+  "owner": {
+    "name": "Maciej Cielecki"
+  },
+  "metadata": {
+    "description": "Local-first event routing, durable waits, delivery, and observability for AI agents.",
+    "version": "0.2.1"
+  },
+  "plugins": [
+    {
+      "name": "switchboard",
+      "source": "./plugins/switchboard",
+      "description": "CLI-managed event routing and durable waits for AI agents, with a read-only web operations view.",
+      "version": "0.2.1",
+      "author": {
+        "name": "Maciej Cielecki"
+      },
+      "license": "MIT",
+      "keywords": ["agents", "events", "routing", "observability"],
+      "category": "productivity"
+    }
+  ]
+}

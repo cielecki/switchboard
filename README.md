@@ -77,16 +77,27 @@ switchboard --json delivery dispatch <delivery-id> \
 
 Broker acceptance changes the delivery to `accepted`, not `acknowledged`. The destination task
 receives exact CLI commands for inspecting and acknowledging the delivery after completing its
-work. See [the adapter contract](docs/adapters.md) for third-party adapters.
+work. See [the adapter contract](plugins/switchboard/docs/adapters.md) for third-party adapters.
 
-## Plugin
+## Plugin marketplace
 
-The repository root is a dual-host plugin package:
+The public repository is a dual-host marketplace containing one plugin under
+`plugins/switchboard`. Install it in Codex with:
 
-- Codex reads `.codex-plugin/plugin.json`;
-- Claude Code reads `.claude-plugin/plugin.json`;
-- both discover the `switchboard` skill under `skills/`;
-- the skill operates Switchboard exclusively through the CLI.
+```bash
+codex plugin marketplace add cielecki/switchboard
+codex plugin add switchboard@switchboard
+```
+
+For Claude Code:
+
+```bash
+claude plugin marketplace add cielecki/switchboard
+claude plugin install switchboard@switchboard
+```
+
+Both hosts discover the `switchboard` skill inside the plugin. The skill operates Switchboard
+exclusively through the CLI; marketplace updates never own or replace the external database.
 
 ## Principles
 
