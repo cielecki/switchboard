@@ -10,7 +10,7 @@ from typing import Any
 
 from . import core
 from .adapters import run_command_adapter, run_inbound_leads, run_ingest_shadow
-from .db import Database
+from .db import SCHEMA_VERSION, Database
 from .service import install_launch_agent, service_status, uninstall_launch_agent
 from .supervisor import run_forever, run_once
 from .web import serve
@@ -187,9 +187,47 @@ def build_parser() -> argparse.ArgumentParser:
     for verb in ("show", "start", "retry"):
         processor_mutation = processor.add_parser(verb)
         processor_mutation.add_argument("id")
+    bind = processor.add_parser("bind", help="bind a processor queue to a durable chat")
+    bind.add_argument("--space", required=True)
+    bind.add_argument("--processor", required=True)
+    bind.add_argument("--consumer", required=True)
+    bind.add_argument("--lease", type=int, default=1800)
+    bind.add_argument("--activate-inactive", action="store_true")
+    bindings = processor.add_parser("bindings")
+    bindings.add_argument("--space")
+    bindings.add_argument("--state", choices=["enabled", "disabled"])
+    binding_show = processor.add_parser("binding-show")
+    binding_show.add_argument("id")
+    for verb in ("binding-enable", "binding-disable"):
+        binding_mutation = processor.add_parser(verb)
+        binding_mutation.add_argument("id")
+    claim = processor.add_parser("claim")
+    claim.add_argument("id")
+    claim.add_argument("--worker", required=True)
+    claim.add_argument("--lease", type=int)
+    heartbeat = processor.add_parser("heartbeat")
+    heartbeat.add_argument("id")
+    heartbeat.add_argument("--worker", required=True)
+    heartbeat.add_argument("--lease", type=int)
+    release = processor.add_parser("release")
+    release.add_argument("id")
+    release.add_argument("--worker", required=True)
+    release.add_argument("--reason", default="")
+    processor_delivery_list = processor.add_parser("delivery-list")
+    processor_delivery_list.add_argument("--state")
+    processor_delivery_show = processor.add_parser("delivery-show")
+    processor_delivery_show.add_argument("id")
+    processor_delivery_dispatch = processor.add_parser("delivery-dispatch")
+    processor_delivery_dispatch.add_argument("id")
+    processor_delivery_dispatch.add_argument(
+        "--relay", default=os.environ.get("SWITCHBOARD_CHATS_RELAY")
+    )
+    processor_delivery_dispatch.add_argument("--activate-inactive", action="store_true")
+    processor_delivery_dispatch.add_argument("--timeout", type=int, default=30)
     for verb in ("complete", "fail", "needs-review"):
         finish_processor = processor.add_parser(verb)
         finish_processor.add_argument("id")
+        finish_processor.add_argument("--worker")
         finish_processor.add_argument("--summary", default="")
         finish_processor.add_argument("--facts", type=json_object, default={})
         finish_processor.add_argument("--decision", type=json_object, default={})
@@ -236,6 +274,8 @@ def build_parser() -> argparse.ArgumentParser:
         supervise.add_argument("--activate-inactive", action="store_true")
         supervise.add_argument("--delivery-timeout", type=int, default=30)
         supervise.add_argument("--delivery-retry", type=int, default=60)
+        supervise.add_argument("--alert-command-json", type=json_string_array)
+        supervise.add_argument("--alert-after", type=int, default=900)
         if verb == "run":
             supervise.add_argument("--host", default="127.0.0.1")
             supervise.add_argument("--port", type=int, default=8765)
@@ -251,6 +291,8 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--port", type=int, default=8765)
     install.add_argument("--poll", type=int, default=5)
     install.add_argument("--delivery-retry", type=int, default=60)
+    install.add_argument("--alert-command-json", type=json_string_array)
+    install.add_argument("--alert-after", type=int, default=900)
     service.add_parser("uninstall")
     service.add_parser("status")
     return parser
@@ -259,7 +301,7 @@ def build_parser() -> argparse.ArgumentParser:
 def dispatch(args: argparse.Namespace, db: Database) -> Any:
     if args.command == "init":
         db.initialize()
-        return {"database": str(db.path), "schema_version": 4}
+        return {"database": str(db.path), "schema_version": SCHEMA_VERSION}
     if args.command == "status":
         return core.status(db)
     if args.command == "space":
@@ -382,12 +424,56 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
             return core.apply_routes_to_event(db, args.event_id)
         return core.list_routes(db, space_id=args.space, state=args.state)
     if args.command == "processor":
+        if args.verb == "bind":
+            return core.bind_processor(
+                db,
+                space_id=args.space,
+                processor=args.processor,
+                consumer=args.consumer,
+                activate_inactive=args.activate_inactive,
+                lease_seconds=args.lease,
+            )
+        if args.verb == "bindings":
+            return core.list_processor_bindings(db, space_id=args.space, state=args.state)
+        if args.verb == "binding-show":
+            return core.get_processor_binding(db, args.id)
+        if args.verb == "binding-enable":
+            return core.set_processor_binding_enabled(db, args.id, True)
+        if args.verb == "binding-disable":
+            return core.set_processor_binding_enabled(db, args.id, False)
         if args.verb == "show":
             return core.get_processor_run(db, args.id)
         if args.verb == "start":
             return core.start_processor_run(db, args.id)
+        if args.verb == "claim":
+            return core.claim_processor_run(
+                db, args.id, worker=args.worker, lease_seconds=args.lease
+            )
+        if args.verb == "heartbeat":
+            return core.heartbeat_processor_run(
+                db, args.id, worker=args.worker, lease_seconds=args.lease
+            )
+        if args.verb == "release":
+            return core.release_processor_run(
+                db, args.id, worker=args.worker, reason=args.reason
+            )
         if args.verb == "retry":
             return core.retry_processor_run(db, args.id)
+        if args.verb == "delivery-list":
+            return core.list_processor_deliveries(db, args.state)
+        if args.verb == "delivery-show":
+            return core.get_processor_delivery(db, args.id)
+        if args.verb == "delivery-dispatch":
+            if not args.relay:
+                raise ValueError("pass --relay or set SWITCHBOARD_CHATS_RELAY")
+            return core.dispatch_processor_delivery(
+                db,
+                args.id,
+                relay=args.relay,
+                cli_command=own_cli_command(),
+                activate_inactive=args.activate_inactive,
+                timeout=args.timeout,
+            )
         if args.verb in {"complete", "fail", "needs-review"}:
             state = {"complete": "completed", "fail": "failed"}.get(args.verb, args.verb)
             return core.finish_processor_run(
@@ -399,6 +485,7 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 decision=args.decision,
                 actions=args.actions,
                 error=getattr(args, "error", None),
+                worker=args.worker,
             )
         return core.list_processor_runs(
             db, state=args.state, processor=args.processor, event_id=args.event
@@ -445,6 +532,8 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
             "activate_inactive": args.activate_inactive,
             "delivery_timeout": args.delivery_timeout,
             "delivery_retry_seconds": args.delivery_retry,
+            "alert_command": args.alert_command_json,
+            "alert_after_seconds": args.alert_after,
         }
         if args.verb == "once":
             return run_once(db, **options)
@@ -466,6 +555,8 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 port=args.port,
                 poll_seconds=args.poll,
                 delivery_retry_seconds=args.delivery_retry,
+                alert_command=args.alert_command_json,
+                alert_after_seconds=args.alert_after,
                 activate_inactive=args.activate_inactive,
             )
         if args.verb == "uninstall":

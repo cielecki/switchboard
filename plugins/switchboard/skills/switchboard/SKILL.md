@@ -31,6 +31,8 @@ sufficient proof of a mutation.
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json wait list --state active
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json route list
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json processor list
+"${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json processor bindings
+"${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json processor delivery-list
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json delivery list --state pending
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json adapter runs --limit 20
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json schedule list
@@ -61,8 +63,11 @@ Cancel obsolete waits explicitly:
 ```
 
 Routes use the same predicate fields as waits, are ordered by ascending priority, and stop at the
-first match. A match creates a processor run; it does not execute the processor. Record domain work
-as structured facts, a decision, and actions through `processor start|complete|fail|needs-review`.
+first match. A match creates a processor run; it does not execute the processor. A
+`processor bind` command associates one space/processor pair with a stable chat consumer and
+backfills its pending runs. The destination must use `processor claim --worker <consumer>` before
+work, `processor heartbeat` during long work, and `complete|fail|needs-review --worker <consumer>`
+with structured facts, a decision, and actions. Use `processor release` when handing work back.
 Keep concise human-readable context in `--summary`, not as an unstructured replacement for those
 fields.
 

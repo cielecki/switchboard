@@ -184,6 +184,79 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(calls, emitted["deliveries"])
         self.assertEqual(result["deliveries"][0]["state"], "accepted")
 
+    def test_stalled_processor_alert_and_recovery_are_each_sent_once(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_route(
+            self.db,
+            space_id="demo",
+            name="triage",
+            predicate={"event_type": "message.received"},
+            processor="mail-triage",
+        )
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        emitted = core.emit_event(
+            self.db,
+            source_id="mail",
+            external_id="message-alert",
+            event_type="message.received",
+            attributes={},
+        )
+        delivery = core.list_processor_deliveries(self.db)[0]
+        at = datetime.now().astimezone()
+        old = (at - timedelta(minutes=16)).isoformat()
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE processor_deliveries SET state='accepted', accepted_at=? WHERE id=?",
+                (old, delivery["id"]),
+            )
+        alerts: list[dict] = []
+
+        def alert_runner(_command, payload):
+            alerts.append(payload)
+            return {"sent": True}
+
+        first = run_cycle(
+            self.db,
+            relay=None,
+            cli_command=["switchboard"],
+            at=at,
+            alert_command=["/alert"],
+            alert_runner=alert_runner,
+        )
+        second = run_cycle(
+            self.db,
+            relay=None,
+            cli_command=["switchboard"],
+            at=at,
+            alert_command=["/alert"],
+            alert_runner=alert_runner,
+        )
+        core.claim_processor_run(
+            self.db, emitted["processor_runs"][0], worker="chat:claude:session-1"
+        )
+        recovered = run_cycle(
+            self.db,
+            relay=None,
+            cli_command=["switchboard"],
+            at=at,
+            alert_command=["/alert"],
+            alert_runner=alert_runner,
+        )
+
+        self.assertEqual(first["alerts"][0]["state"], "notified")
+        self.assertEqual(second["alerts"], [])
+        self.assertEqual(recovered["alerts"][0]["state"], "recovery-notified")
+        self.assertEqual([item["kind"] for item in alerts], [
+            "processor-unreachable",
+            "processor-recovered",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

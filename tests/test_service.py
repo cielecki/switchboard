@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import subprocess
@@ -22,6 +23,8 @@ class ServiceTest(unittest.TestCase):
         self.launcher.touch()
         self.relay = self.root / "send-message.py"
         self.relay.touch()
+        self.alert = self.root / "alert.py"
+        self.alert.touch()
         self.plist = self.root / "io.github.cielecki.switchboard.plist"
         self.commands: list[list[str]] = []
 
@@ -41,12 +44,19 @@ class ServiceTest(unittest.TestCase):
                 cli_command=[str(self.launcher)],
                 relay=self.relay,
                 port=9876,
+                alert_command=[str(self.alert), "--mode", "self"],
+                alert_after_seconds=900,
                 runner=self.runner,
             )
             payload = plistlib.loads(self.plist.read_bytes())
             self.assertTrue(installed["loaded"])
             self.assertIn("supervisor", payload["ProgramArguments"])
             self.assertIn("9876", payload["ProgramArguments"])
+            self.assertIn("--alert-command-json", payload["ProgramArguments"])
+            alert_argument = payload["ProgramArguments"][
+                payload["ProgramArguments"].index("--alert-command-json") + 1
+            ]
+            self.assertEqual(json.loads(alert_argument), [str(self.alert), "--mode", "self"])
             self.assertEqual(payload["EnvironmentVariables"]["PATH"], os.environ["PATH"])
             self.assertIn("bootstrap", [command[1] for command in self.commands])
 

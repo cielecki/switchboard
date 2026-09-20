@@ -79,7 +79,7 @@ class CliTest(unittest.TestCase):
         status = self.run_cli("status")
         self.assertEqual(status["counts"]["pending_deliveries"], 1)
         self.assertEqual(status["counts"]["open_processor_runs"], 1)
-        self.assertEqual(status["schema_version"], 4)
+        self.assertEqual(status["schema_version"], 5)
 
 
 if __name__ == "__main__":

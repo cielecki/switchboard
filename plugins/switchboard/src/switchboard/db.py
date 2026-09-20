@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+SCHEMA_VERSION = 5
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
@@ -104,6 +106,68 @@ CREATE TABLE IF NOT EXISTS processor_runs (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS processor_bindings (
+    id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    processor TEXT NOT NULL,
+    consumer TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('enabled', 'disabled')),
+    activate_inactive INTEGER NOT NULL DEFAULT 0 CHECK(activate_inactive IN (0, 1)),
+    lease_seconds INTEGER NOT NULL DEFAULT 1800 CHECK(lease_seconds > 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(space_id, processor)
+);
+
+CREATE TABLE IF NOT EXISTS processor_deliveries (
+    id TEXT PRIMARY KEY,
+    processor_run_id TEXT NOT NULL UNIQUE REFERENCES processor_runs(id),
+    binding_id TEXT NOT NULL REFERENCES processor_bindings(id),
+    consumer TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    generation INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL CHECK(state IN ('pending', 'accepted', 'acknowledged', 'cancelled')),
+    created_at TEXT NOT NULL,
+    accepted_at TEXT,
+    acknowledged_at TEXT,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS processor_delivery_attempts (
+    id TEXT PRIMARY KEY,
+    delivery_id TEXT NOT NULL REFERENCES processor_deliveries(id),
+    request_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('attempting', 'accepted', 'failed')),
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    detail TEXT
+);
+
+CREATE TABLE IF NOT EXISTS processor_attempts (
+    id TEXT PRIMARY KEY,
+    processor_run_id TEXT NOT NULL REFERENCES processor_runs(id),
+    worker TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('running', 'completed', 'failed', 'needs-review', 'released', 'expired')),
+    lease_expires_at TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    finished_at TEXT,
+    detail TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS processor_alerts (
+    id TEXT PRIMARY KEY,
+    delivery_id TEXT NOT NULL REFERENCES processor_deliveries(id),
+    generation INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('open', 'recovered')),
+    opened_at TEXT NOT NULL,
+    notified_at TEXT,
+    recovered_at TEXT,
+    recovery_notified_at TEXT,
+    detail TEXT NOT NULL,
+    UNIQUE(delivery_id, generation)
+);
+
 CREATE TABLE IF NOT EXISTS deliveries (
     id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL REFERENCES events(id),
@@ -191,12 +255,18 @@ CREATE INDEX IF NOT EXISTS idx_deliveries_state ON deliveries(state, created_at)
 CREATE INDEX IF NOT EXISTS idx_routes_order ON routes(space_id, state, priority, id);
 CREATE INDEX IF NOT EXISTS idx_processor_runs_state ON processor_runs(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_processor_runs_event ON processor_runs(event_id);
+CREATE INDEX IF NOT EXISTS idx_processor_bindings_lookup ON processor_bindings(space_id, processor, state);
+CREATE INDEX IF NOT EXISTS idx_processor_deliveries_state ON processor_deliveries(state, created_at);
+CREATE INDEX IF NOT EXISTS idx_processor_delivery_attempts_delivery ON processor_delivery_attempts(delivery_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_processor_attempts_run ON processor_attempts(processor_run_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_processor_attempts_lease ON processor_attempts(state, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_processor_alerts_state ON processor_alerts(state, opened_at);
 CREATE INDEX IF NOT EXISTS idx_delivery_attempts_delivery ON delivery_attempts(delivery_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_source_health_source ON source_health(source_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_runs_started ON adapter_runs(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_schedules_due ON adapter_schedules(enabled, next_run_at);
 
-INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '4');
+INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '5');
 """
 
 

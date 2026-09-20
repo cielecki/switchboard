@@ -64,6 +64,18 @@ class WebTest(unittest.TestCase):
             processors = json.load(response)
         self.assertEqual(processors, [])
 
+        with urllib.request.urlopen(f"{self.base_url}/api/processor-bindings") as response:
+            bindings = json.load(response)
+        self.assertEqual(bindings, [])
+
+        with urllib.request.urlopen(f"{self.base_url}/api/processor-deliveries") as response:
+            processor_deliveries = json.load(response)
+        self.assertEqual(processor_deliveries, [])
+
+        with urllib.request.urlopen(f"{self.base_url}/api/processor-alerts") as response:
+            processor_alerts = json.load(response)
+        self.assertEqual(processor_alerts, [])
+
         request = urllib.request.Request(f"{self.base_url}/api/waits", data=b"{}", method="POST")
         with self.assertRaises(urllib.error.HTTPError) as raised:
             urllib.request.urlopen(request)

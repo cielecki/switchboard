@@ -25,6 +25,13 @@ owns no mutations. Delivery adapters wake agent hosts without taking ownership o
 - **Route:** ordered deterministic policy directing an event to a processor or destination.
 - **Processor run:** idempotent work record created by the first matching route, with structured
   facts, decision, actions, summary, and error state recorded by the specialized workflow.
+- **Processor binding:** CLI-managed association between a space/processor pair and one durable
+  agent-chat consumer, including its default lease.
+- **Processor delivery:** durable wake-up owed to that consumer. Transport acceptance is distinct
+  from claiming or finishing the run.
+- **Processor attempt:** atomic worker claim with an expiring lease, heartbeat, and terminal state.
+- **Processor alert:** deduplicated evidence that a delivery was unreachable or accepted but not
+  claimed, followed by a recorded recovery.
 - **Schedule:** CLI-managed cadence and private adapter configuration stored outside the plugin.
 - **Supervisor:** single-instance loop that runs schedules, dispatches deliveries, records a
   heartbeat, and hosts read-only observability.
@@ -46,8 +53,9 @@ or recommend a route in a later processor stage, but it does not silently alter 
 routing policy.
 
 Enabled routes are evaluated by ascending numeric priority and then stable route ID. The first
-match wins. Routing creates a pending processor run but does not execute it; processor execution
-belongs to the external agent host or workflow named by the route.
+match wins. Routing creates a pending processor run and, when bound, a processor delivery. The
+chat relay wakes the external host but does not execute or complete the run. The destination must
+claim the lease and record its own structured outcome.
 
 ## Migration direction
 

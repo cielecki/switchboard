@@ -24,6 +24,8 @@ The first vertical slice provides:
 - a CLI-installed macOS launch agent that runs the supervisor and read-only web UI;
 - ordered, first-match routing tables that create idempotent processor jobs;
 - structured processor outcomes with separate facts, decisions, actions, and errors;
+- durable processor-to-chat bindings, delivery history, and expiring work leases;
+- deduplicated unreachable and recovery alerts through a configurable local command;
 - a dedicated inbound-leads adapter that stores pointers and state, never message bodies.
 
 Existing capture and lead-processing systems can integrate as adapters before any migration or
@@ -93,16 +95,24 @@ switchboard --json route create --space nina-inbound --name "New inbound lead" \
   --priority 10 --source inbound/nina --event-type inbound.lead.pending \
   --processor inbound-leads:nina
 
-switchboard --json processor start <processor-run-id>
+switchboard --json processor bind --space nina-inbound \
+  --processor inbound-leads:nina --consumer chat:claude:<claude-cli-session-id> \
+  --activate-inactive
+switchboard --json processor claim <processor-run-id> \
+  --worker chat:claude:<claude-cli-session-id>
 switchboard --json processor complete <processor-run-id> \
+  --worker chat:claude:<claude-cli-session-id> \
   --summary "Qualified and handed to the sales owner." \
   --facts '{"identity_checked":true}' \
   --decision '{"verdict":"question"}' \
   --actions '[{"kind":"crm","state":"created"}]'
 ```
 
-The read-only dashboard shows the route, queue state, concise summary, facts, decision, actions,
-and error history. CLI commands remain the only mutation interface.
+The binding backfills existing pending runs and automatically creates a delivery for each new run.
+Only one worker can hold a run's expiring lease; `processor heartbeat` renews it and
+`processor release` safely requeues it. The read-only dashboard shows bindings, delivery attempts,
+leases, alerts, queue state, concise summary, facts, decision, actions, and errors. CLI commands
+remain the only mutation interface.
 
 Observe the inbound-leads ledger without duplicating message content:
 
@@ -135,11 +145,16 @@ switchboard supervisor run --relay /absolute/path/to/chats/send-message.py
 On macOS, install it as a persistent per-user launch agent entirely through the CLI:
 
 ```bash
-switchboard --json service install --relay /absolute/path/to/chats/send-message.py
+switchboard --json service install --relay /absolute/path/to/chats/send-message.py \
+  --activate-inactive \
+  --alert-command-json '["/absolute/path/to/local-alert-adapter"]' \
+  --alert-after 900
 switchboard --json service status
 ```
 
-The default web address is <http://127.0.0.1:8765>. Re-run `service install` after updating the
+The alert command receives one JSON payload on standard input. This keeps phone numbers, messenger
+credentials, and machine-specific policy outside the public plugin. The default web address is
+<http://127.0.0.1:8765>. Re-run `service install` after updating the
 plugin so launchd points at the newly installed version. See
 [the supervisor guide](plugins/switchboard/docs/supervisor.md).
 

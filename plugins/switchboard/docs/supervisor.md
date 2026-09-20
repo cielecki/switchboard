@@ -8,11 +8,20 @@ Each cycle:
 1. selects enabled adapter schedules whose `next_run_at` has arrived;
 2. runs each adapter independently and records completion or failure;
 3. advances each schedule by its configured interval;
-4. dispatches eligible pending chat deliveries when a chats relay is configured;
-5. writes a heartbeat, cycle time, and combined error summary.
+4. recovers expired processor leases and materializes missing bound deliveries;
+5. dispatches eligible wait and processor deliveries when a chats relay is configured;
+6. sends one configured alert after a processor chat remains unreachable or unclaimed for the
+   threshold, and one recovery alert when it resumes;
+7. writes a heartbeat, cycle time, and combined error summary.
 
 A failed source or delivery does not terminate the process. Failed chat deliveries stay pending and
 retain their stable broker request ID. The retry interval prevents tight failure loops.
+Processor requeues increment a delivery generation, producing a new stable request ID without
+duplicating a prior accepted wake.
+
+The optional alert adapter is an argv list supplied through `--alert-command-json`; it receives a
+JSON object on standard input. Switchboard never stores messenger credentials or destinations in
+the repository. Alert records are deduplicated in the database even if the local adapter fails.
 
 ## CLI control
 
