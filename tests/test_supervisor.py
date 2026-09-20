@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from switchboard import core
 from switchboard.db import Database
@@ -55,7 +56,35 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(schedule["last_state"], "completed")
         self.assertEqual(
             datetime.fromisoformat(schedule["next_run_at"]),
-            at.replace(microsecond=at.microsecond) + timedelta(seconds=60),
+            datetime.fromisoformat(schedule["last_finished_at"]) + timedelta(seconds=60),
+        )
+
+    def test_slow_schedule_advances_from_completion_time(self) -> None:
+        created = core.upsert_ingest_schedule(
+            self.db,
+            "slow-ingest",
+            status_script=self.status_script,
+            every_seconds=60,
+        )
+        started_at = datetime.fromisoformat(created["next_run_at"])
+        finished_at = started_at + timedelta(seconds=90)
+
+        with patch("switchboard.supervisor.core.now", return_value=finished_at.isoformat()):
+            run_cycle(
+                self.db,
+                relay=None,
+                cli_command=["switchboard"],
+                at=started_at,
+                ingest_runner=lambda *_args, **_kwargs: {
+                    "run": {"id": "run-slow", "state": "completed"}
+                },
+            )
+
+        schedule = core.get_schedule(self.db, "slow-ingest")
+        self.assertEqual(schedule["last_finished_at"], finished_at.isoformat())
+        self.assertEqual(
+            datetime.fromisoformat(schedule["next_run_at"]),
+            finished_at + timedelta(seconds=60),
         )
 
     def test_schedule_failure_is_recorded_without_crashing_cycle(self) -> None:

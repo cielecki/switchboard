@@ -98,7 +98,7 @@ def run_cycle(
             else:
                 raise ValueError(f"unsupported scheduled adapter: {schedule['adapter']}")
             terminal = core.mark_schedule_finished(
-                db, schedule["id"], state="completed", finished_at=cycle_timestamp
+                db, schedule["id"], state="completed", finished_at=core.now()
             )
             schedule_results.append(
                 {"id": schedule["id"], "state": "completed", "run": result["run"], "schedule": terminal}
@@ -110,7 +110,7 @@ def run_cycle(
                 schedule["id"],
                 state="failed",
                 error=detail,
-                finished_at=cycle_timestamp,
+                finished_at=core.now(),
             )
             schedule_results.append({"id": schedule["id"], "state": "failed", "error": detail, "schedule": terminal})
             errors.append(f"schedule {schedule['id']}: {detail}")
