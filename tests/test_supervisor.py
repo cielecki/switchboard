@@ -184,6 +184,53 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(calls, emitted["deliveries"])
         self.assertEqual(result["deliveries"][0]["state"], "accepted")
 
+    def test_cycle_bounds_delivery_work(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_wait(
+            self.db,
+            space_id="demo",
+            consumer="chat:codex:task-123",
+            predicate={"event_type": "message.received"},
+        )
+        core.create_wait(
+            self.db,
+            space_id="demo",
+            consumer="chat:codex:task-456",
+            predicate={"event_type": "message.received"},
+        )
+        emitted = core.emit_event(
+            self.db,
+            source_id="mail",
+            external_id="message-1",
+            event_type="message.received",
+            attributes={},
+            occurred_at="2026-01-01T00:00:00+00:00",
+        )
+        relay = self.root / "send-message.py"
+        relay.touch()
+        calls: list[str] = []
+
+        def delivery_runner(db, delivery_id, **_kwargs):
+            calls.append(delivery_id)
+            with db.transaction() as connection:
+                connection.execute(
+                    "UPDATE deliveries SET state='accepted' WHERE id=?", (delivery_id,)
+                )
+            return {"id": delivery_id, "state": "accepted"}
+
+        result = run_cycle(
+            self.db,
+            relay=relay,
+            cli_command=["switchboard"],
+            delivery_batch_size=1,
+            delivery_runner=delivery_runner,
+        )
+
+        self.assertEqual(calls, [min(emitted["deliveries"])])
+        self.assertEqual(len(result["deliveries"]), 1)
+        self.assertEqual(len(core.list_deliveries(self.db, "pending")), 1)
+
     def test_stalled_processor_alert_and_recovery_are_each_sent_once(self) -> None:
         core.create_space(self.db, "demo")
         core.register_source(self.db, "mail", "demo", "mail")

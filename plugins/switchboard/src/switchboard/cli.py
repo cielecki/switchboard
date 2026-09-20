@@ -274,6 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
         supervise.add_argument("--activate-inactive", action="store_true")
         supervise.add_argument("--delivery-timeout", type=int, default=30)
         supervise.add_argument("--delivery-retry", type=int, default=60)
+        supervise.add_argument("--delivery-batch", type=int, default=1)
         supervise.add_argument("--alert-command-json", type=json_string_array)
         supervise.add_argument("--alert-after", type=int, default=900)
         if verb == "run":
@@ -291,6 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--port", type=int, default=8765)
     install.add_argument("--poll", type=int, default=5)
     install.add_argument("--delivery-retry", type=int, default=60)
+    install.add_argument("--delivery-batch", type=int, default=1)
     install.add_argument("--alert-command-json", type=json_string_array)
     install.add_argument("--alert-after", type=int, default=900)
     service.add_parser("uninstall")
@@ -532,6 +534,7 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
             "activate_inactive": args.activate_inactive,
             "delivery_timeout": args.delivery_timeout,
             "delivery_retry_seconds": args.delivery_retry,
+            "delivery_batch_size": args.delivery_batch,
             "alert_command": args.alert_command_json,
             "alert_after_seconds": args.alert_after,
         }
@@ -555,6 +558,7 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 port=args.port,
                 poll_seconds=args.poll,
                 delivery_retry_seconds=args.delivery_retry,
+                delivery_batch_size=args.delivery_batch,
                 alert_command=args.alert_command_json,
                 alert_after_seconds=args.alert_after,
                 activate_inactive=args.activate_inactive,

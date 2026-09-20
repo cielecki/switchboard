@@ -50,6 +50,7 @@ def install_launch_agent(
     port: int = 8765,
     poll_seconds: int = 5,
     delivery_retry_seconds: int = 60,
+    delivery_batch_size: int = 1,
     activate_inactive: bool = False,
     alert_command: list[str] | None = None,
     alert_after_seconds: int = 900,
@@ -61,7 +62,12 @@ def install_launch_agent(
         raise ValueError("service install requires an absolute Switchboard launcher path")
     if relay is not None and not Path(relay).expanduser().is_file():
         raise ValueError(f"chats relay not found: {Path(relay).expanduser()}")
-    if poll_seconds < 1 or delivery_retry_seconds < 1 or alert_after_seconds < 1:
+    if (
+        poll_seconds < 1
+        or delivery_retry_seconds < 1
+        or delivery_batch_size < 1
+        or alert_after_seconds < 1
+    ):
         raise ValueError("service intervals must be at least one second")
     if alert_command is not None and (
         not alert_command or not Path(alert_command[0]).expanduser().is_file()
@@ -84,6 +90,8 @@ def install_launch_agent(
         str(poll_seconds),
         "--delivery-retry",
         str(delivery_retry_seconds),
+        "--delivery-batch",
+        str(delivery_batch_size),
         "--alert-after",
         str(alert_after_seconds),
     ]

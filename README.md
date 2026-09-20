@@ -136,10 +136,11 @@ switchboard --json supervisor once --relay /absolute/path/to/chats/send-message.
 ```
 
 The long-running supervisor executes due schedules, retries failed deliveries with bounded cadence,
+limits chat delivery work per cycle so a backlog cannot starve source polling or heartbeats,
 records its heartbeat and errors, and serves the web UI:
 
 ```bash
-switchboard supervisor run --relay /absolute/path/to/chats/send-message.py
+switchboard supervisor run --relay /absolute/path/to/chats/send-message.py --delivery-batch 1
 ```
 
 On macOS, install it as a persistent per-user launch agent entirely through the CLI:

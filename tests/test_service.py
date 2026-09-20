@@ -52,6 +52,12 @@ class ServiceTest(unittest.TestCase):
             self.assertTrue(installed["loaded"])
             self.assertIn("supervisor", payload["ProgramArguments"])
             self.assertIn("9876", payload["ProgramArguments"])
+            self.assertEqual(
+                payload["ProgramArguments"][
+                    payload["ProgramArguments"].index("--delivery-batch") + 1
+                ],
+                "1",
+            )
             self.assertIn("--alert-command-json", payload["ProgramArguments"])
             alert_argument = payload["ProgramArguments"][
                 payload["ProgramArguments"].index("--alert-command-json") + 1

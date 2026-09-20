@@ -9,13 +9,17 @@ Each cycle:
 2. runs each adapter independently and records completion or failure;
 3. advances each schedule by its configured interval;
 4. recovers expired processor leases and materializes missing bound deliveries;
-5. dispatches eligible wait and processor deliveries when a chats relay is configured;
+5. dispatches the oldest eligible wait or processor deliveries, up to the configured per-cycle
+   batch limit, when a chats relay is configured;
 6. sends one configured alert after a processor chat remains unreachable or unclaimed for the
    threshold, and one recovery alert when it resumes;
 7. writes a heartbeat, cycle time, and combined error summary.
 
 A failed source or delivery does not terminate the process. Failed chat deliveries stay pending and
 retain their stable broker request ID. The retry interval prevents tight failure loops.
+The default `--delivery-batch 1` keeps source polling and the health heartbeat responsive even when
+the initial queue contains many chat wakes. Increase it only when the relay is known to return
+quickly.
 Processor requeues increment a delivery generation, producing a new stable request ID without
 duplicating a prior accepted wake.
 

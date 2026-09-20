@@ -200,6 +200,7 @@ def run_cycle(
     activate_inactive: bool = False,
     delivery_timeout: int = 30,
     delivery_retry_seconds: int = 60,
+    delivery_batch_size: int = 1,
     at: datetime | None = None,
     ingest_runner: Callable[..., dict[str, Any]] = run_ingest_shadow,
     inbound_runner: Callable[..., dict[str, Any]] = run_inbound_leads,
@@ -209,6 +210,8 @@ def run_cycle(
     alert_after_seconds: int = 900,
     alert_runner: Callable[[list[str], dict[str, Any]], dict[str, Any]] = _run_alert_command,
 ) -> dict[str, Any]:
+    if delivery_batch_size < 1:
+        raise ValueError("delivery batch size must be at least one")
     cycle_at = at or datetime.now(UTC)
     cycle_timestamp = cycle_at.isoformat()
     schedule_results: list[dict[str, Any]] = []
@@ -262,47 +265,49 @@ def run_cycle(
 
     core.sync_processor_deliveries(db)
     if relay is not None:
+        candidates: list[tuple[str, str, dict[str, Any]]] = []
         for pending in core.list_deliveries(db, "pending"):
             delivery = core.get_delivery(db, pending["id"])
-            if not _delivery_is_due(delivery, cycle_at, delivery_retry_seconds):
-                continue
-            try:
-                result = delivery_runner(
-                    db,
-                    delivery["id"],
-                    relay=relay,
-                    cli_command=cli_command,
-                    activate_inactive=activate_inactive,
-                    timeout=delivery_timeout,
-                )
-                delivery_results.append(result)
-            except Exception as exc:  # noqa: BLE001 - retryable delivery failure
-                detail = str(exc)
-                delivery_results.append(
-                    {"id": delivery["id"], "state": "failed", "error": detail}
-                )
-                errors.append(f"delivery {delivery['id']}: {detail}")
+            if _delivery_is_due(delivery, cycle_at, delivery_retry_seconds):
+                candidates.append((delivery["created_at"], "wait", delivery))
 
         for pending in core.list_processor_deliveries(db, "pending"):
             delivery = core.get_processor_delivery(db, pending["id"])
-            if not _delivery_is_due(delivery, cycle_at, delivery_retry_seconds):
-                continue
+            if _delivery_is_due(delivery, cycle_at, delivery_retry_seconds):
+                candidates.append((delivery["created_at"], "processor", delivery))
+
+        candidates.sort(key=lambda candidate: (candidate[0], candidate[2]["id"]))
+        for _created_at, kind, delivery in candidates[:delivery_batch_size]:
             try:
-                result = processor_delivery_runner(
-                    db,
-                    delivery["id"],
-                    relay=relay,
-                    cli_command=cli_command,
-                    activate_inactive=activate_inactive,
-                    timeout=delivery_timeout,
-                )
-                processor_delivery_results.append(result)
+                if kind == "wait":
+                    result = delivery_runner(
+                        db,
+                        delivery["id"],
+                        relay=relay,
+                        cli_command=cli_command,
+                        activate_inactive=activate_inactive,
+                        timeout=delivery_timeout,
+                    )
+                    delivery_results.append(result)
+                else:
+                    result = processor_delivery_runner(
+                        db,
+                        delivery["id"],
+                        relay=relay,
+                        cli_command=cli_command,
+                        activate_inactive=activate_inactive,
+                        timeout=delivery_timeout,
+                    )
+                    processor_delivery_results.append(result)
             except Exception as exc:  # noqa: BLE001 - retryable delivery failure
                 detail = str(exc)
-                processor_delivery_results.append(
-                    {"id": delivery["id"], "state": "failed", "error": detail}
-                )
-                errors.append(f"processor delivery {delivery['id']}: {detail}")
+                result = {"id": delivery["id"], "state": "failed", "error": detail}
+                if kind == "wait":
+                    delivery_results.append(result)
+                    errors.append(f"delivery {delivery['id']}: {detail}")
+                else:
+                    processor_delivery_results.append(result)
+                    errors.append(f"processor delivery {delivery['id']}: {detail}")
 
     if alert_command is not None:
         alert_results = process_processor_alerts(
@@ -336,6 +341,7 @@ def run_once(
     activate_inactive: bool = False,
     delivery_timeout: int = 30,
     delivery_retry_seconds: int = 60,
+    delivery_batch_size: int = 1,
     alert_command: list[str] | None = None,
     alert_after_seconds: int = 900,
 ) -> dict[str, Any]:
@@ -357,6 +363,7 @@ def run_once(
             activate_inactive=activate_inactive,
             delivery_timeout=delivery_timeout,
             delivery_retry_seconds=delivery_retry_seconds,
+            delivery_batch_size=delivery_batch_size,
             alert_command=alert_command,
             alert_after_seconds=alert_after_seconds,
         )
@@ -385,6 +392,7 @@ def run_forever(
     activate_inactive: bool = False,
     delivery_timeout: int = 30,
     delivery_retry_seconds: int = 60,
+    delivery_batch_size: int = 1,
     alert_command: list[str] | None = None,
     alert_after_seconds: int = 900,
     stop_event: threading.Event | None = None,
@@ -428,6 +436,7 @@ def run_forever(
                     activate_inactive=activate_inactive,
                     delivery_timeout=delivery_timeout,
                     delivery_retry_seconds=delivery_retry_seconds,
+                    delivery_batch_size=delivery_batch_size,
                     alert_command=alert_command,
                     alert_after_seconds=alert_after_seconds,
                 )
