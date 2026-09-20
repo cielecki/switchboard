@@ -25,6 +25,7 @@ HTML = """<!doctype html>
     section { margin-top:16px; overflow:auto; }
     table { width:100%; border-collapse:collapse; font-size:14px; }
     th,td { text-align:left; padding:10px 8px; border-bottom:1px solid #263153; white-space:nowrap; }
+    td.wrap { white-space:normal; min-width:220px; }
     th { color:#9aa6c6; font-weight:600; } code { color:#b9c8ff; }
   </style>
 </head>
@@ -34,6 +35,8 @@ HTML = """<!doctype html>
   <section><h2>Supervisor</h2><div id="supervisor"></div></section>
   <section><h2>Schedules</h2><div id="schedules"></div></section>
   <section><h2>Open deliveries</h2><div id="deliveries"></div></section>
+  <section><h2>Processor queue and outcomes</h2><div id="processors"></div></section>
+  <section><h2>Routing table</h2><div id="routes"></div></section>
   <section><h2>Active waits</h2><div id="waits"></div></section>
   <section><h2>Adapter runs</h2><div id="adapters"></div></section>
   <section><h2>Recent events</h2><div id="events"></div></section>
@@ -44,13 +47,19 @@ function table(rows, cols) {
   return '<table><thead><tr>'+cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+
     rows.map(r=>'<tr>'+cols.map(c=>'<td><code>'+esc(typeof r[c]==='object'?JSON.stringify(r[c]):r[c])+'</code></td>').join('')+'</tr>').join('')+'</tbody></table>';
 }
+function richTable(rows, cols, wrap=[]) {
+  if (!rows.length) return '<p class="muted">None</p>';
+  return '<table><thead><tr>'+cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(c=>'<td class="'+(wrap.includes(c)?'wrap':'')+'"><code>'+esc(typeof r[c]==='object'?JSON.stringify(r[c]):r[c])+'</code></td>').join('')+'</tr>').join('')+'</tbody></table>';
+}
 async function load() {
-  const [status, schedules, deliveries, waits, adapters, events] = await Promise.all(['/api/status','/api/schedules','/api/deliveries','/api/waits','/api/adapters','/api/events'].map(u=>fetch(u).then(r=>r.json())));
+  const [status, schedules, deliveries, processors, routes, waits, adapters, events] = await Promise.all(['/api/status','/api/schedules','/api/deliveries','/api/processors','/api/routes','/api/waits','/api/adapters','/api/events'].map(u=>fetch(u).then(r=>r.json())));
   document.querySelector('#db').textContent = status.database;
   document.querySelector('#counts').innerHTML = Object.entries(status.counts).map(([k,v])=>`<div class="card"><div class="muted">${esc(k.replaceAll('_',' '))}</div><div class="value">${v}</div></div>`).join('');
   document.querySelector('#supervisor').innerHTML = status.supervisor ? table([status.supervisor], ['state','pid','heartbeat_at','last_cycle_at','dispatch_enabled','web_url','last_error']) : '<p class="muted">Never started</p>';
   document.querySelector('#schedules').innerHTML = table(schedules, ['id','adapter','enabled','every_seconds','next_run_at','last_state','last_error']);
   document.querySelector('#deliveries').innerHTML = table(deliveries.filter(x=>['pending','accepted'].includes(x.state)), ['id','state','consumer','event_id','created_at']);
+  document.querySelector('#processors').innerHTML = richTable(processors, ['id','state','processor','summary','facts','decision','actions','updated_at'], ['summary','facts','decision','actions']);
+  document.querySelector('#routes').innerHTML = richTable(routes, ['priority','state','name','space_id','predicate','target'], ['predicate','target']);
   document.querySelector('#waits').innerHTML = table(waits.filter(x=>x.state==='active'), ['id','consumer','purpose','predicate','created_at']);
   document.querySelector('#adapters').innerHTML = table(adapters, ['id','adapter','state','discovered_sources','emitted_events','deduplicated_events','started_at']);
   document.querySelector('#events').innerHTML = table(events, ['id','source_id','event_type','external_id','observed_at']);
@@ -86,6 +95,8 @@ def handler_for(db: Database) -> type[BaseHTTPRequestHandler]:
                     "/api/events": lambda: core.list_events(db),
                     "/api/waits": lambda: core.list_waits(db),
                     "/api/deliveries": lambda: core.list_deliveries(db),
+                    "/api/processors": lambda: core.list_processor_runs(db),
+                    "/api/routes": lambda: core.list_routes(db),
                     "/api/sources": lambda: core.list_sources(db),
                     "/api/spaces": lambda: core.list_spaces(db),
                     "/api/adapters": lambda: core.list_adapter_runs(db),

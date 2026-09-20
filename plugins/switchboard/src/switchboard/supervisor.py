@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from . import core
-from .adapters import run_ingest_shadow
+from .adapters import run_inbound_leads, run_ingest_shadow
 from .db import Database
 from .web import handler_for
 
@@ -65,6 +65,7 @@ def run_cycle(
     delivery_retry_seconds: int = 60,
     at: datetime | None = None,
     ingest_runner: Callable[..., dict[str, Any]] = run_ingest_shadow,
+    inbound_runner: Callable[..., dict[str, Any]] = run_inbound_leads,
     delivery_runner: Callable[..., dict[str, Any]] = core.dispatch_delivery,
 ) -> dict[str, Any]:
     cycle_at = at or datetime.now(UTC)
@@ -76,15 +77,26 @@ def run_cycle(
     for schedule in core.due_schedules(db, cycle_timestamp):
         core.mark_schedule_started(db, schedule["id"], cycle_timestamp)
         try:
-            if schedule["adapter"] != "ingest-shadow":
+            if schedule["adapter"] == "ingest-shadow":
+                config = schedule["config"]
+                result = ingest_runner(
+                    db,
+                    status_script=config["status_script"],
+                    space_id=config["space_id"],
+                    timeout=config["timeout"],
+                )
+            elif schedule["adapter"] == "inbound-leads":
+                config = schedule["config"]
+                result = inbound_runner(
+                    db,
+                    ledger_script=config["ledger_script"],
+                    profile=config["profile"],
+                    space_id=config["space_id"],
+                    discovery_script=config.get("discovery_script"),
+                    timeout=config["timeout"],
+                )
+            else:
                 raise ValueError(f"unsupported scheduled adapter: {schedule['adapter']}")
-            config = schedule["config"]
-            result = ingest_runner(
-                db,
-                status_script=config["status_script"],
-                space_id=config["space_id"],
-                timeout=config["timeout"],
-            )
             terminal = core.mark_schedule_finished(
                 db, schedule["id"], state="completed", finished_at=cycle_timestamp
             )

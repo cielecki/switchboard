@@ -21,11 +21,13 @@ The first vertical slice provides:
 - delivery through the existing local `chats` broker, with acceptance and completion tracked
   separately;
 - persistent adapter schedules, automatic delivery dispatch, and supervisor heartbeats;
-- a CLI-installed macOS launch agent that runs the supervisor and read-only web UI.
+- a CLI-installed macOS launch agent that runs the supervisor and read-only web UI;
+- ordered, first-match routing tables that create idempotent processor jobs;
+- structured processor outcomes with separate facts, decisions, actions, and errors;
+- a dedicated inbound-leads adapter that stores pointers and state, never message bodies.
 
-Routing tables, processor outcomes, and additional source adapters are the next milestones.
 Existing capture and lead-processing systems can integrate as adapters before any migration or
-replacement.
+replacement. Domain processors remain responsible for their own policy and external writes.
 
 ## Try it
 
@@ -80,6 +82,38 @@ switchboard --json delivery dispatch <delivery-id> \
 Broker acceptance changes the delivery to `accepted`, not `acknowledged`. The destination task
 receives exact CLI commands for inspecting and acknowledging the delivery after completing its
 work. See [the adapter contract](plugins/switchboard/docs/adapters.md) for third-party adapters.
+
+## Routing and processor outcomes
+
+Routes are evaluated in ascending priority order and the first match wins. A match creates one
+idempotent processor run; it does not execute a model or mutate the source system.
+
+```bash
+switchboard --json route create --space nina-inbound --name "New inbound lead" \
+  --priority 10 --source inbound/nina --event-type inbound.lead.pending \
+  --processor inbound-leads:nina
+
+switchboard --json processor start <processor-run-id>
+switchboard --json processor complete <processor-run-id> \
+  --summary "Qualified and handed to the sales owner." \
+  --facts '{"identity_checked":true}' \
+  --decision '{"verdict":"question"}' \
+  --actions '[{"kind":"crm","state":"created"}]'
+```
+
+The read-only dashboard shows the route, queue state, concise summary, facts, decision, actions,
+and error history. CLI commands remain the only mutation interface.
+
+Observe the inbound-leads ledger without duplicating message content:
+
+```bash
+switchboard --json adapter inbound-leads \
+  --ledger-script /absolute/path/to/ledger.py --profile nina --space nina-inbound
+```
+
+Add `--discovery-script /absolute/path/to/watch_inbound_gmail.sh` to perform one bounded canonical
+Gmail discovery poll before reading the ledger. The supervisor forces `MAX_POLLS=1`; it never
+triages or publishes a lead.
 
 ## Persistent supervisor
 

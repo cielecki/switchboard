@@ -83,8 +83,13 @@ class MigrationTest(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='adapter_schedules'"
                 ).fetchone()
             self.assertIn("'accepted'", sql)
-            self.assertEqual(version, "3")
+            self.assertEqual(version, "4")
             self.assertIsNotNone(schedule_table)
+            with db.connect() as migrated:
+                route_table = migrated.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='routes'"
+                ).fetchone()
+            self.assertIsNotNone(route_table)
 
 
 if __name__ == "__main__":

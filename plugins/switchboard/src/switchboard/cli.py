@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import core
-from .adapters import run_command_adapter, run_ingest_shadow
+from .adapters import run_command_adapter, run_inbound_leads, run_ingest_shadow
 from .db import Database
 from .service import install_launch_agent, service_status, uninstall_launch_agent
 from .supervisor import run_forever, run_once
@@ -35,6 +35,16 @@ def json_string_array(value: str) -> list[str]:
         isinstance(item, str) and item for item in result
     ):
         raise argparse.ArgumentTypeError("value must be a non-empty JSON array of strings")
+    return result
+
+
+def json_array(value: str) -> list[Any]:
+    try:
+        result = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if not isinstance(result, list):
+        raise argparse.ArgumentTypeError("value must be a JSON array")
     return result
 
 
@@ -86,6 +96,15 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--python", default=sys.executable)
     ingest.add_argument("--space", default="personal-ingest")
     ingest.add_argument("--timeout", type=int, default=120)
+    inbound = adapter.add_parser(
+        "inbound-leads", help="discover and observe pending inbound-leads pointers"
+    )
+    inbound.add_argument("--ledger-script", required=True)
+    inbound.add_argument("--profile", required=True)
+    inbound.add_argument("--discovery-script")
+    inbound.add_argument("--python", default=sys.executable)
+    inbound.add_argument("--space", default="inbound-leads")
+    inbound.add_argument("--timeout", type=int, default=240)
     runs = adapter.add_parser("runs", help="show recent adapter runs")
     runs.add_argument("--limit", type=int, default=50)
 
@@ -101,6 +120,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_ingest.add_argument("--space", default="personal-ingest")
     add_ingest.add_argument("--timeout", type=int, default=120)
     add_ingest.add_argument("--disabled", action="store_true")
+    add_inbound = schedule.add_parser(
+        "add-inbound-leads", help="schedule inbound discovery and ledger observation"
+    )
+    add_inbound.add_argument("id")
+    add_inbound.add_argument("--ledger-script", required=True)
+    add_inbound.add_argument("--profile", required=True)
+    add_inbound.add_argument("--discovery-script")
+    add_inbound.add_argument("--every", type=int, required=True, help="interval in seconds")
+    add_inbound.add_argument("--space", default="inbound-leads")
+    add_inbound.add_argument("--timeout", type=int, default=240)
+    add_inbound.add_argument("--disabled", action="store_true")
     schedule.add_parser("list")
     enable = schedule.add_parser("enable")
     enable.add_argument("id")
@@ -124,6 +154,48 @@ def build_parser() -> argparse.ArgumentParser:
     add_list_filter(listing)
     cancel = wait.add_parser("cancel")
     cancel.add_argument("id")
+
+    route = commands.add_parser(
+        "route", help="manage deterministic processor routing"
+    ).add_subparsers(dest="verb", required=True)
+    create_route = route.add_parser("create")
+    create_route.add_argument("--space", required=True)
+    create_route.add_argument("--name", required=True)
+    create_route.add_argument("--processor", required=True)
+    create_route.add_argument("--priority", type=int, default=100)
+    create_route.add_argument("--source")
+    create_route.add_argument("--event-type")
+    create_route.add_argument("--attribute", action="append", type=key_value, default=[])
+    create_route.add_argument("--contains", action="append", type=key_value, default=[])
+    create_route.add_argument("--disabled", action="store_true")
+    list_routes = route.add_parser("list")
+    list_routes.add_argument("--space")
+    list_routes.add_argument("--state", choices=["enabled", "disabled"])
+    for verb in ("enable", "disable", "delete"):
+        route_mutation = route.add_parser(verb)
+        route_mutation.add_argument("id")
+    apply_route = route.add_parser("apply")
+    apply_route.add_argument("event_id")
+
+    processor = commands.add_parser(
+        "processor", help="inspect and record structured processor outcomes"
+    ).add_subparsers(dest="verb", required=True)
+    list_processors = processor.add_parser("list")
+    list_processors.add_argument("--state")
+    list_processors.add_argument("--processor")
+    list_processors.add_argument("--event")
+    for verb in ("show", "start", "retry"):
+        processor_mutation = processor.add_parser(verb)
+        processor_mutation.add_argument("id")
+    for verb in ("complete", "fail", "needs-review"):
+        finish_processor = processor.add_parser(verb)
+        finish_processor.add_argument("id")
+        finish_processor.add_argument("--summary", default="")
+        finish_processor.add_argument("--facts", type=json_object, default={})
+        finish_processor.add_argument("--decision", type=json_object, default={})
+        finish_processor.add_argument("--actions", type=json_array, default=[])
+        if verb in {"fail", "needs-review"}:
+            finish_processor.add_argument("--error", required=verb == "fail")
 
     event = commands.add_parser("event", help="emit and inspect events").add_subparsers(dest="verb", required=True)
     emit = event.add_parser("emit")
@@ -187,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
 def dispatch(args: argparse.Namespace, db: Database) -> Any:
     if args.command == "init":
         db.initialize()
-        return {"database": str(db.path), "schema_version": 3}
+        return {"database": str(db.path), "schema_version": 4}
     if args.command == "status":
         return core.status(db)
     if args.command == "space":
@@ -214,6 +286,16 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 space_id=args.space,
                 timeout=args.timeout,
             )
+        if args.verb == "inbound-leads":
+            return run_inbound_leads(
+                db,
+                ledger_script=args.ledger_script,
+                profile=args.profile,
+                discovery_script=args.discovery_script,
+                python=args.python,
+                space_id=args.space,
+                timeout=args.timeout,
+            )
         return core.list_adapter_runs(db, args.limit)
     if args.command == "schedule":
         if args.verb == "add-ingest-shadow":
@@ -221,6 +303,18 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 db,
                 args.id,
                 status_script=args.status_script,
+                every_seconds=args.every,
+                space_id=args.space,
+                timeout=args.timeout,
+                enabled=not args.disabled,
+            )
+        if args.verb == "add-inbound-leads":
+            return core.upsert_inbound_schedule(
+                db,
+                args.id,
+                ledger_script=args.ledger_script,
+                profile=args.profile,
+                discovery_script=args.discovery_script,
                 every_seconds=args.every,
                 space_id=args.space,
                 timeout=args.timeout,
@@ -258,6 +352,57 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
         if args.verb == "cancel":
             return core.cancel_wait(db, args.id)
         return core.list_waits(db, args.state)
+    if args.command == "route":
+        if args.verb == "create":
+            predicate = {
+                key: value
+                for key, value in (("source_id", args.source), ("event_type", args.event_type))
+                if value is not None
+            }
+            if args.attribute:
+                predicate["attributes"] = dict(args.attribute)
+            if args.contains:
+                predicate["contains"] = dict(args.contains)
+            return core.create_route(
+                db,
+                space_id=args.space,
+                name=args.name,
+                predicate=predicate,
+                processor=args.processor,
+                priority=args.priority,
+                enabled=not args.disabled,
+            )
+        if args.verb == "enable":
+            return core.set_route_enabled(db, args.id, True)
+        if args.verb == "disable":
+            return core.set_route_enabled(db, args.id, False)
+        if args.verb == "delete":
+            return core.delete_route(db, args.id)
+        if args.verb == "apply":
+            return core.apply_routes_to_event(db, args.event_id)
+        return core.list_routes(db, space_id=args.space, state=args.state)
+    if args.command == "processor":
+        if args.verb == "show":
+            return core.get_processor_run(db, args.id)
+        if args.verb == "start":
+            return core.start_processor_run(db, args.id)
+        if args.verb == "retry":
+            return core.retry_processor_run(db, args.id)
+        if args.verb in {"complete", "fail", "needs-review"}:
+            state = {"complete": "completed", "fail": "failed"}.get(args.verb, args.verb)
+            return core.finish_processor_run(
+                db,
+                args.id,
+                state=state,
+                summary=args.summary,
+                facts=args.facts,
+                decision=args.decision,
+                actions=args.actions,
+                error=getattr(args, "error", None),
+            )
+        return core.list_processor_runs(
+            db, state=args.state, processor=args.processor, event_id=args.event
+        )
     if args.command == "event":
         if args.verb == "emit":
             return core.emit_event(

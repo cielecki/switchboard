@@ -101,6 +101,50 @@ class SwitchboardTest(unittest.TestCase):
         self.assertEqual(core.list_waits(self.db)[0]["state"], "cancelled")
         self.assertEqual(core.list_deliveries(self.db)[0]["state"], "cancelled")
 
+    def test_first_matching_route_creates_structured_processor_run(self) -> None:
+        fallback = core.create_route(
+            self.db,
+            space_id="demo",
+            name="fallback",
+            priority=200,
+            predicate={"event_type": "message.received"},
+            processor="generic-triage",
+        )
+        preferred = core.create_route(
+            self.db,
+            space_id="demo",
+            name="inbound leads",
+            priority=10,
+            predicate={"event_type": "message.received", "attributes": {"queue": "lead"}},
+            processor="inbound-leads:nina",
+        )
+
+        emitted = core.emit_event(
+            self.db,
+            source_id="mail",
+            external_id="message-4",
+            event_type="message.received",
+            attributes={"queue": "lead"},
+        )
+
+        self.assertEqual(emitted["matched_routes"], [preferred["id"]])
+        self.assertNotIn(fallback["id"], emitted["matched_routes"])
+        run = core.start_processor_run(self.db, emitted["processor_runs"][0])
+        completed = core.finish_processor_run(
+            self.db,
+            run["id"],
+            state="completed",
+            summary="Qualified lead routed to the sales owner.",
+            facts={"sender_verified": True},
+            decision={"verdict": "question"},
+            actions=[{"kind": "crm", "state": "created"}],
+        )
+
+        self.assertEqual(completed["decision"], {"verdict": "question"})
+        self.assertEqual(completed["actions"][0]["kind"], "crm")
+        reapplied = core.apply_routes_to_event(self.db, emitted["event"]["id"])
+        self.assertEqual(reapplied["processor_runs"], [run["id"]])
+
 
 if __name__ == "__main__":
     unittest.main()

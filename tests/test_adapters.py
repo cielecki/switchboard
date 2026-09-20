@@ -7,6 +7,7 @@ from pathlib import Path
 
 from switchboard import core
 from switchboard.adapters import AdapterError, apply_snapshot, run_ingest_shadow
+from switchboard.adapters.inbound import snapshot_from_pending
 from switchboard.adapters.ingest import snapshot_from_rows
 from switchboard.db import Database
 
@@ -65,6 +66,31 @@ class AdapterTest(unittest.TestCase):
         runs = core.list_adapter_runs(self.db)
         self.assertEqual(runs[0]["state"], "failed")
         self.assertIn("mirror stale", runs[0]["detail"])
+
+    def test_inbound_snapshot_keeps_only_pointer_and_structured_state(self) -> None:
+        snapshot = snapshot_from_pending(
+            [
+                {
+                    "id": "nina:message-1",
+                    "profile": "nina",
+                    "internal_date": "1789902000000",
+                    "sender": "Private Person <person@example.com>",
+                    "subject": "Confidential opportunity",
+                    "verdict": None,
+                    "completed": False,
+                }
+            ],
+            profile="nina",
+            space_id="nina-inbound",
+        )
+
+        result = apply_snapshot(self.db, snapshot)
+        event = result["events"][0]["event"]
+
+        self.assertEqual(event["attributes"]["pointer"], "nina:message-1")
+        self.assertNotIn("sender", event["attributes"])
+        self.assertNotIn("subject", event["attributes"])
+        self.assertEqual(event["event_type"], "inbound.lead.pending")
 
     def test_snapshot_rejects_event_from_undiscovered_source(self) -> None:
         snapshot = {

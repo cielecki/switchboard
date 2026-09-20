@@ -252,6 +252,80 @@ def upsert_ingest_schedule(
     return get_schedule(db, schedule_id)
 
 
+def upsert_inbound_schedule(
+    db: Database,
+    schedule_id: str,
+    *,
+    ledger_script: str | Path,
+    profile: str,
+    every_seconds: int,
+    space_id: str = "inbound-leads",
+    discovery_script: str | Path | None = None,
+    timeout: int = 240,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    if not schedule_id:
+        raise ValueError("schedule id cannot be empty")
+    if not profile:
+        raise ValueError("inbound profile cannot be empty")
+    if every_seconds < 1:
+        raise ValueError("schedule interval must be at least one second")
+    if timeout < 1:
+        raise ValueError("schedule timeout must be at least one second")
+    ledger = Path(ledger_script).expanduser().resolve()
+    if not ledger.is_file():
+        raise ValueError(f"inbound ledger script not found: {ledger}")
+    discovery = None
+    if discovery_script:
+        discovery = Path(discovery_script).expanduser().resolve()
+        if not discovery.is_file():
+            raise ValueError(f"inbound discovery script not found: {discovery}")
+    db.initialize()
+    timestamp = now()
+    config = {
+        "ledger_script": str(ledger),
+        "profile": profile,
+        "space_id": space_id,
+        "timeout": timeout,
+        "discovery_script": str(discovery) if discovery else None,
+    }
+    with db.transaction() as connection:
+        connection.execute(
+            "INSERT INTO adapter_schedules(id, adapter, config_json, every_seconds, enabled, "
+            "next_run_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, "
+            "config_json=excluded.config_json, every_seconds=excluded.every_seconds, "
+            "enabled=excluded.enabled, next_run_at=excluded.next_run_at, "
+            "updated_at=excluded.updated_at",
+            (
+                schedule_id,
+                "inbound-leads",
+                json.dumps(config, sort_keys=True),
+                every_seconds,
+                int(enabled),
+                timestamp,
+                timestamp,
+                timestamp,
+            ),
+        )
+        audit(
+            connection,
+            command="schedule.upsert",
+            entity_type="adapter_schedule",
+            entity_id=schedule_id,
+            payload={
+                "adapter": "inbound-leads",
+                "profile": profile,
+                "every_seconds": every_seconds,
+                "enabled": enabled,
+                "space_id": space_id,
+                "discovery_enabled": discovery is not None,
+                "timeout": timeout,
+            },
+        )
+    return get_schedule(db, schedule_id)
+
+
 def get_schedule(db: Database, schedule_id: str) -> dict[str, Any]:
     row = db.row("SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,))
     if row is None:
@@ -502,6 +576,129 @@ def cancel_wait(db: Database, wait_id: str) -> dict[str, Any]:
     return {"id": wait_id, "state": "cancelled"}
 
 
+def create_route(
+    db: Database,
+    *,
+    space_id: str,
+    name: str,
+    predicate: dict[str, Any],
+    processor: str,
+    priority: int = 100,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    if not name.strip():
+        raise ValueError("route name cannot be empty")
+    if not predicate:
+        raise ValueError("route predicate cannot be empty")
+    if not processor.strip():
+        raise ValueError("route processor cannot be empty")
+    db.initialize()
+    route_id = make_id("route")
+    timestamp = now()
+    target = {"kind": "processor", "processor": processor}
+    state = "enabled" if enabled else "disabled"
+    with db.transaction() as connection:
+        if connection.execute("SELECT 1 FROM spaces WHERE id=?", (space_id,)).fetchone() is None:
+            raise ValueError(f"space not found: {space_id}")
+        connection.execute(
+            "INSERT INTO routes(id, space_id, name, priority, predicate_json, target_json, "
+            "state, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                route_id,
+                space_id,
+                name,
+                priority,
+                json.dumps(predicate, sort_keys=True),
+                json.dumps(target, sort_keys=True),
+                state,
+                timestamp,
+                timestamp,
+            ),
+        )
+        audit(
+            connection,
+            command="route.create",
+            entity_type="route",
+            entity_id=route_id,
+            payload={
+                "space_id": space_id,
+                "name": name,
+                "priority": priority,
+                "predicate": predicate,
+                "target": target,
+                "state": state,
+            },
+        )
+    return get_route(db, route_id)
+
+
+def get_route(db: Database, route_id: str) -> dict[str, Any]:
+    row = db.row("SELECT * FROM routes WHERE id=?", (route_id,))
+    if row is None:
+        raise ValueError(f"route not found: {route_id}")
+    return decode_json_fields(row, "predicate_json", "target_json")
+
+
+def list_routes(
+    db: Database, *, space_id: str | None = None, state: str | None = None
+) -> list[dict[str, Any]]:
+    filters: list[str] = []
+    params: list[Any] = []
+    if space_id:
+        filters.append("space_id=?")
+        params.append(space_id)
+    if state:
+        filters.append("state=?")
+        params.append(state)
+    query = "SELECT * FROM routes"
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY space_id, priority, id"
+    return [
+        decode_json_fields(row, "predicate_json", "target_json")
+        for row in db.rows(query, tuple(params))
+    ]
+
+
+def set_route_enabled(db: Database, route_id: str, enabled: bool) -> dict[str, Any]:
+    state = "enabled" if enabled else "disabled"
+    timestamp = now()
+    with db.transaction() as connection:
+        changed = connection.execute(
+            "UPDATE routes SET state=?, updated_at=? WHERE id=?",
+            (state, timestamp, route_id),
+        ).rowcount
+        if not changed:
+            raise ValueError(f"route not found: {route_id}")
+        audit(
+            connection,
+            command="route.enable" if enabled else "route.disable",
+            entity_type="route",
+            entity_id=route_id,
+            payload={"state": state},
+        )
+    return get_route(db, route_id)
+
+
+def delete_route(db: Database, route_id: str) -> dict[str, Any]:
+    with db.transaction() as connection:
+        if connection.execute(
+            "SELECT 1 FROM route_matches WHERE route_id=? LIMIT 1", (route_id,)
+        ).fetchone():
+            raise ValueError("matched routes are durable evidence; disable this route instead")
+        changed = connection.execute("DELETE FROM routes WHERE id=?", (route_id,)).rowcount
+        if not changed:
+            raise ValueError(f"route not found: {route_id}")
+        audit(
+            connection,
+            command="route.delete",
+            entity_type="route",
+            entity_id=route_id,
+            payload={},
+        )
+    return {"id": route_id, "deleted": True}
+
+
 def predicate_matches(
     predicate: dict[str, Any], *, source_id: str, event_type: str, attributes: dict[str, Any]
 ) -> tuple[bool, dict[str, Any]]:
@@ -529,6 +726,63 @@ def predicate_matches(
     return matched, {"operator": "and", "checks": checks}
 
 
+def _apply_routes(
+    connection: sqlite3.Connection,
+    *,
+    event_id: str,
+    space_id: str,
+    source_id: str,
+    event_type: str,
+    attributes: dict[str, Any],
+    matched_at: str,
+) -> tuple[list[str], list[str]]:
+    existing = connection.execute(
+        "SELECT route_id FROM route_matches WHERE event_id=?", (event_id,)
+    ).fetchone()
+    if existing is not None:
+        runs = connection.execute(
+            "SELECT id FROM processor_runs WHERE event_id=? ORDER BY created_at", (event_id,)
+        ).fetchall()
+        return [existing["route_id"]], [row["id"] for row in runs]
+
+    routes = connection.execute(
+        "SELECT * FROM routes WHERE space_id=? AND state='enabled' ORDER BY priority, id",
+        (space_id,),
+    ).fetchall()
+    for route in routes:
+        predicate = json.loads(route["predicate_json"])
+        matched, reason = predicate_matches(
+            predicate, source_id=source_id, event_type=event_type, attributes=attributes
+        )
+        if not matched:
+            continue
+        target = json.loads(route["target_json"])
+        if target.get("kind") != "processor" or not target.get("processor"):
+            raise ValueError(f"route {route['id']} has an unsupported target")
+        match_id = make_id("rmatch")
+        run_id = make_id("proc")
+        connection.execute(
+            "INSERT INTO route_matches(id, event_id, route_id, matched_at, reason_json) "
+            "VALUES(?,?,?,?,?)",
+            (match_id, event_id, route["id"], matched_at, json.dumps(reason, sort_keys=True)),
+        )
+        connection.execute(
+            "INSERT INTO processor_runs(id, event_id, route_id, processor, idempotency_key, "
+            "state, created_at, updated_at) VALUES(?,?,?,?,?,'pending',?,?)",
+            (
+                run_id,
+                event_id,
+                route["id"],
+                target["processor"],
+                f"{event_id}:{route['id']}:{target['processor']}",
+                matched_at,
+                matched_at,
+            ),
+        )
+        return [route["id"]], [run_id]
+    return [], []
+
+
 def emit_event(
     db: Database,
     *,
@@ -554,6 +808,8 @@ def emit_event(
                 "deduplicated": True,
                 "matched_waits": [],
                 "deliveries": [],
+                "matched_routes": [],
+                "processor_runs": [],
             }
 
         event_id = make_id("evt")
@@ -614,6 +870,16 @@ def emit_event(
             matched_waits.append(wait["id"])
             deliveries.append(delivery_id)
 
+        matched_routes, processor_runs = _apply_routes(
+            connection,
+            event_id=event_id,
+            space_id=source["space_id"],
+            source_id=source_id,
+            event_type=event_type,
+            attributes=attributes,
+            matched_at=observed_at,
+        )
+
         audit(
             connection,
             command="event.emit",
@@ -624,6 +890,8 @@ def emit_event(
                 "external_id": external_id,
                 "event_type": event_type,
                 "matched_waits": matched_waits,
+                "matched_routes": matched_routes,
+                "processor_runs": processor_runs,
             },
             actor=f"source:{source_id}",
         )
@@ -642,6 +910,37 @@ def emit_event(
         "deduplicated": False,
         "matched_waits": matched_waits,
         "deliveries": deliveries,
+        "matched_routes": matched_routes,
+        "processor_runs": processor_runs,
+    }
+
+
+def apply_routes_to_event(db: Database, event_id: str) -> dict[str, Any]:
+    db.initialize()
+    with db.transaction() as connection:
+        event = connection.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+        if event is None:
+            raise ValueError(f"event not found: {event_id}")
+        matched_routes, processor_runs = _apply_routes(
+            connection,
+            event_id=event_id,
+            space_id=event["space_id"],
+            source_id=event["source_id"],
+            event_type=event["event_type"],
+            attributes=json.loads(event["attributes_json"]),
+            matched_at=now(),
+        )
+        audit(
+            connection,
+            command="route.apply",
+            entity_type="event",
+            entity_id=event_id,
+            payload={"matched_routes": matched_routes, "processor_runs": processor_runs},
+        )
+    return {
+        "event_id": event_id,
+        "matched_routes": matched_routes,
+        "processor_runs": processor_runs,
     }
 
 
@@ -664,7 +963,142 @@ def get_event(db: Database, event_id: str) -> dict[str, Any]:
     event["deliveries"] = db.rows(
         "SELECT * FROM deliveries WHERE event_id=? ORDER BY created_at", (event_id,)
     )
+    route_match = db.row("SELECT * FROM route_matches WHERE event_id=?", (event_id,))
+    event["route_match"] = (
+        decode_json_fields(route_match, "reason_json") if route_match is not None else None
+    )
+    event["processor_runs"] = list_processor_runs(db, event_id=event_id)
     return event
+
+
+def _decode_processor_run(row: dict[str, Any]) -> dict[str, Any]:
+    return decode_json_fields(row, "facts_json", "decision_json", "actions_json")
+
+
+def list_processor_runs(
+    db: Database,
+    *,
+    state: str | None = None,
+    processor: str | None = None,
+    event_id: str | None = None,
+) -> list[dict[str, Any]]:
+    filters: list[str] = []
+    params: list[Any] = []
+    for field, value in (("state", state), ("processor", processor), ("event_id", event_id)):
+        if value:
+            filters.append(f"{field}=?")
+            params.append(value)
+    query = "SELECT * FROM processor_runs"
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY created_at DESC"
+    return [_decode_processor_run(row) for row in db.rows(query, tuple(params))]
+
+
+def get_processor_run(db: Database, run_id: str) -> dict[str, Any]:
+    row = db.row("SELECT * FROM processor_runs WHERE id=?", (run_id,))
+    if row is None:
+        raise ValueError(f"processor run not found: {run_id}")
+    result = _decode_processor_run(row)
+    event = db.row("SELECT * FROM events WHERE id=?", (row["event_id"],))
+    result["event"] = decode_json_fields(event, "attributes_json") if event else None
+    result["route"] = get_route(db, row["route_id"])
+    return result
+
+
+def start_processor_run(db: Database, run_id: str) -> dict[str, Any]:
+    timestamp = now()
+    with db.transaction() as connection:
+        changed = connection.execute(
+            "UPDATE processor_runs SET state='running', started_at=COALESCE(started_at, ?), "
+            "updated_at=?, error=NULL WHERE id=? AND state='pending'",
+            (timestamp, timestamp, run_id),
+        ).rowcount
+        if not changed:
+            raise ValueError(f"pending processor run not found: {run_id}")
+        audit(
+            connection,
+            command="processor.start",
+            entity_type="processor_run",
+            entity_id=run_id,
+            payload={"started_at": timestamp},
+        )
+    return get_processor_run(db, run_id)
+
+
+def finish_processor_run(
+    db: Database,
+    run_id: str,
+    *,
+    state: str,
+    summary: str = "",
+    facts: dict[str, Any] | None = None,
+    decision: dict[str, Any] | None = None,
+    actions: list[Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    if state not in {"completed", "failed", "needs-review"}:
+        raise ValueError("processor terminal state must be completed, failed, or needs-review")
+    if state == "completed" and error:
+        raise ValueError("completed processor runs cannot carry an error")
+    if state == "failed" and not error:
+        raise ValueError("failed processor runs require an error")
+    timestamp = now()
+    completed_at = timestamp if state == "completed" else None
+    with db.transaction() as connection:
+        changed = connection.execute(
+            "UPDATE processor_runs SET state=?, summary=?, facts_json=?, decision_json=?, "
+            "actions_json=?, error=?, completed_at=?, updated_at=? "
+            "WHERE id=? AND state IN ('pending','running')",
+            (
+                state,
+                summary,
+                json.dumps(facts or {}, sort_keys=True),
+                json.dumps(decision or {}, sort_keys=True),
+                json.dumps(actions or [], sort_keys=True),
+                error,
+                completed_at,
+                timestamp,
+                run_id,
+            ),
+        ).rowcount
+        if not changed:
+            raise ValueError(f"pending or running processor run not found: {run_id}")
+        audit(
+            connection,
+            command=f"processor.{state}",
+            entity_type="processor_run",
+            entity_id=run_id,
+            payload={
+                "state": state,
+                "summary": summary,
+                "facts": facts or {},
+                "decision": decision or {},
+                "actions": actions or [],
+                "error": error,
+            },
+        )
+    return get_processor_run(db, run_id)
+
+
+def retry_processor_run(db: Database, run_id: str) -> dict[str, Any]:
+    timestamp = now()
+    with db.transaction() as connection:
+        changed = connection.execute(
+            "UPDATE processor_runs SET state='pending', error=NULL, completed_at=NULL, "
+            "updated_at=? WHERE id=? AND state IN ('failed','needs-review')",
+            (timestamp, run_id),
+        ).rowcount
+        if not changed:
+            raise ValueError(f"failed or needs-review processor run not found: {run_id}")
+        audit(
+            connection,
+            command="processor.retry",
+            entity_type="processor_run",
+            entity_id=run_id,
+            payload={},
+        )
+    return get_processor_run(db, run_id)
 
 
 def list_deliveries(db: Database, state: str | None = None) -> list[dict[str, Any]]:
@@ -835,6 +1269,8 @@ def status(db: Database) -> dict[str, Any]:
             "sources",
             "events",
             "waits",
+            "routes",
+            "processor_runs",
             "deliveries",
             "adapter_runs",
             "adapter_schedules",
@@ -849,9 +1285,12 @@ def status(db: Database) -> dict[str, Any]:
         counts["accepted_deliveries"] = connection.execute(
             "SELECT count(*) FROM deliveries WHERE state='accepted'"
         ).fetchone()[0]
+        counts["open_processor_runs"] = connection.execute(
+            "SELECT count(*) FROM processor_runs WHERE state IN ('pending','running','needs-review')"
+        ).fetchone()[0]
     return {
         "database": str(db.path),
-        "schema_version": 3,
+        "schema_version": 4,
         "counts": counts,
         "supervisor": supervisor_status(db),
     }

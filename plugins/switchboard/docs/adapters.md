@@ -62,3 +62,14 @@ an unchanged poll deduplicates while a status or routing-note change becomes a n
 
 Exit code 3 means the ingest mirror is stale. Switchboard records a failed adapter run and imports
 nothing, so stale data cannot be presented as a current source view.
+
+## Inbound-leads adapter
+
+The built-in inbound adapter uses the owning workflow's supported `ledger.py pending --json`
+command. It imports stable lead pointers and coarse pipeline state only. Sender, subject, body,
+notes, and research do not cross this boundary.
+
+When configured with the owning workflow's Gmail discovery script, it first runs exactly one
+bounded poll with `MAX_POLLS=1`, then reads the ledger. That poll may discover pointers in the
+owning ledger; it does not triage, create CRM records, send mail, or post to Slack. Existing source
+locks remain authoritative, and operators must preserve one publishing owner per mailbox.

@@ -66,6 +66,44 @@ CREATE TABLE IF NOT EXISTS matches (
     UNIQUE(event_id, wait_id)
 );
 
+CREATE TABLE IF NOT EXISTS routes (
+    id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    name TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 100,
+    predicate_json TEXT NOT NULL,
+    target_json TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('enabled', 'disabled')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS route_matches (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL UNIQUE REFERENCES events(id),
+    route_id TEXT NOT NULL REFERENCES routes(id),
+    matched_at TEXT NOT NULL,
+    reason_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS processor_runs (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES events(id),
+    route_id TEXT NOT NULL REFERENCES routes(id),
+    processor TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL CHECK(state IN ('pending', 'running', 'completed', 'failed', 'needs-review')),
+    summary TEXT NOT NULL DEFAULT '',
+    facts_json TEXT NOT NULL DEFAULT '{}',
+    decision_json TEXT NOT NULL DEFAULT '{}',
+    actions_json TEXT NOT NULL DEFAULT '[]',
+    error TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS deliveries (
     id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL REFERENCES events(id),
@@ -150,12 +188,15 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_events_observed ON events(observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_waits_state ON waits(state, space_id);
 CREATE INDEX IF NOT EXISTS idx_deliveries_state ON deliveries(state, created_at);
+CREATE INDEX IF NOT EXISTS idx_routes_order ON routes(space_id, state, priority, id);
+CREATE INDEX IF NOT EXISTS idx_processor_runs_state ON processor_runs(state, created_at);
+CREATE INDEX IF NOT EXISTS idx_processor_runs_event ON processor_runs(event_id);
 CREATE INDEX IF NOT EXISTS idx_delivery_attempts_delivery ON delivery_attempts(delivery_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_source_health_source ON source_health(source_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_runs_started ON adapter_runs(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_schedules_due ON adapter_schedules(enabled, next_run_at);
 
-INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '3');
+INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '4');
 """
 
 

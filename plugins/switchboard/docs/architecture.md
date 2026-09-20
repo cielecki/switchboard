@@ -23,7 +23,8 @@ owns no mutations. Delivery adapters wake agent hosts without taking ownership o
 - **Match:** evidence that a particular event satisfied a particular wait revision.
 - **Delivery:** work owed to a consumer, distinct from transport acceptance or acknowledgement.
 - **Route:** ordered deterministic policy directing an event to a processor or destination.
-- **Processor outcome:** structured record of what a specialized workflow changed.
+- **Processor run:** idempotent work record created by the first matching route, with structured
+  facts, decision, actions, summary, and error state recorded by the specialized workflow.
 - **Schedule:** CLI-managed cadence and private adapter configuration stored outside the plugin.
 - **Supervisor:** single-instance loop that runs schedules, dispatches deliveries, records a
   heartbeat, and hosts read-only observability.
@@ -43,6 +44,10 @@ Wait predicates are conjunctions over allowlisted facts:
 No predicate may execute code, SQL, shell commands, or a model prompt. A model may enrich an event
 or recommend a route in a later processor stage, but it does not silently alter deterministic
 routing policy.
+
+Enabled routes are evaluated by ascending numeric priority and then stable route ID. The first
+match wins. Routing creates a pending processor run but does not execute it; processor execution
+belongs to the external agent host or workflow named by the route.
 
 ## Migration direction
 

@@ -35,6 +35,18 @@ class CliTest(unittest.TestCase):
     def test_cli_vertical_slice(self) -> None:
         self.run_cli("space", "create", "demo")
         self.run_cli("source", "register", "mail", "--space", "demo", "--kind", "mail")
+        route = self.run_cli(
+            "route",
+            "create",
+            "--space",
+            "demo",
+            "--name",
+            "mail triage",
+            "--processor",
+            "mail-triage",
+            "--event-type",
+            "message.received",
+        )
         wait = self.run_cli(
             "wait",
             "create",
@@ -61,9 +73,13 @@ class CliTest(unittest.TestCase):
         )
 
         self.assertEqual(event["matched_waits"], [wait["id"]])
+        self.assertEqual(event["matched_routes"], [route["id"]])
+        processor = self.run_cli("processor", "show", event["processor_runs"][0])
+        self.assertEqual(processor["state"], "pending")
         status = self.run_cli("status")
         self.assertEqual(status["counts"]["pending_deliveries"], 1)
-        self.assertEqual(status["schema_version"], 3)
+        self.assertEqual(status["counts"]["open_processor_runs"], 1)
+        self.assertEqual(status["schema_version"], 4)
 
 
 if __name__ == "__main__":

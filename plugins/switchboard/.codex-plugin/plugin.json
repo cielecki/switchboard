@@ -1,15 +1,15 @@
 {
   "name": "switchboard",
-  "version": "0.3.0",
-  "description": "CLI-managed event routing and durable waits for AI agents.",
+  "version": "0.4.0",
+  "description": "CLI-managed routing tables, structured processor outcomes, and durable waits for AI agents.",
   "author": {
     "name": "Maciej Cielecki"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Switchboard",
-    "shortDescription": "Route events and wake waiting agents.",
-    "longDescription": "Operate a local event ledger, deterministic schedules, durable agent waits, persistent supervision, and delivery history through the Switchboard CLI.",
+    "shortDescription": "Route events into agent processors.",
+    "longDescription": "Operate a local event ledger, deterministic routing tables, structured processor outcomes, durable agent waits, persistent supervision, and delivery history through the Switchboard CLI.",
     "developerName": "Maciej Cielecki",
     "category": "Productivity",
     "capabilities": ["Interactive", "Write"],

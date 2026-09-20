@@ -41,6 +41,14 @@ class WebTest(unittest.TestCase):
             schedules = json.load(response)
         self.assertEqual(schedules, [])
 
+        with urllib.request.urlopen(f"{self.base_url}/api/routes") as response:
+            routes = json.load(response)
+        self.assertEqual(routes, [])
+
+        with urllib.request.urlopen(f"{self.base_url}/api/processors") as response:
+            processors = json.load(response)
+        self.assertEqual(processors, [])
+
         request = urllib.request.Request(f"{self.base_url}/api/waits", data=b"{}", method="POST")
         with self.assertRaises(urllib.error.HTTPError) as raised:
             urllib.request.urlopen(request)

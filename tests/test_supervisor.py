@@ -80,6 +80,34 @@ class SupervisorTest(unittest.TestCase):
         self.assertIn("source unavailable", result["errors"][0])
         self.assertEqual(core.get_schedule(self.db, "ingest")["last_state"], "failed")
 
+    def test_due_inbound_schedule_uses_dedicated_runner(self) -> None:
+        ledger_script = self.root / "ledger.py"
+        ledger_script.touch()
+        created = core.upsert_inbound_schedule(
+            self.db,
+            "nina-inbound",
+            ledger_script=ledger_script,
+            profile="nina",
+            every_seconds=120,
+            space_id="nina-inbound",
+        )
+        calls: list[dict] = []
+
+        def inbound_runner(_db, **kwargs):
+            calls.append(kwargs)
+            return {"run": {"id": "run-inbound", "state": "completed"}}
+
+        result = run_cycle(
+            self.db,
+            relay=None,
+            cli_command=["switchboard"],
+            at=datetime.fromisoformat(created["next_run_at"]),
+            inbound_runner=inbound_runner,
+        )
+
+        self.assertEqual(result["schedules"][0]["state"], "completed")
+        self.assertEqual(calls[0]["profile"], "nina")
+
     def test_once_records_a_clean_supervisor_stop(self) -> None:
         result = run_once(self.db, relay=None, cli_command=["switchboard"])
 
