@@ -19,6 +19,8 @@ class WebTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.db = Database(Path(self.directory.name) / "switchboard.sqlite3")
+        core.create_space(self.db, "test-space", "Test space")
+        core.register_source(self.db, "test-source", "test-space", "test")
         core.start_adapter_run(self.db, "test-adapter")
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self.db))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -33,6 +35,19 @@ class WebTest(unittest.TestCase):
         self.thread.join(timeout=2)
 
     def test_adapter_runs_are_visible_and_web_mutation_is_rejected(self) -> None:
+        with urllib.request.urlopen(self.base_url) as response:
+            html = response.read().decode()
+        self.assertIn('<h2>Spaces</h2>', html)
+        self.assertIn('<h2>Sources</h2>', html)
+
+        with urllib.request.urlopen(f"{self.base_url}/api/spaces") as response:
+            spaces = json.load(response)
+        self.assertEqual(spaces[0]["id"], "test-space")
+
+        with urllib.request.urlopen(f"{self.base_url}/api/sources") as response:
+            sources = json.load(response)
+        self.assertEqual(sources[0]["id"], "test-source")
+
         with urllib.request.urlopen(f"{self.base_url}/api/adapters") as response:
             runs = json.load(response)
         self.assertEqual(runs[0]["adapter"], "test-adapter")

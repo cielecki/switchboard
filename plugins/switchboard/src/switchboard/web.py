@@ -33,6 +33,8 @@ HTML = """<!doctype html>
   <header><div><h1>Switchboard</h1><div class="muted">Read-only operations view</div></div><div id="db" class="muted"></div></header>
   <div id="counts" class="grid"></div>
   <section><h2>Supervisor</h2><div id="supervisor"></div></section>
+  <section><h2>Spaces</h2><div id="spaces"></div></section>
+  <section><h2>Sources</h2><div id="sources"></div></section>
   <section><h2>Schedules</h2><div id="schedules"></div></section>
   <section><h2>Open deliveries</h2><div id="deliveries"></div></section>
   <section><h2>Processor queue and outcomes</h2><div id="processors"></div></section>
@@ -52,10 +54,12 @@ function richTable(rows, cols, wrap=[]) {
   return '<table><thead><tr>'+cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(c=>'<td class="'+(wrap.includes(c)?'wrap':'')+'"><code>'+esc(typeof r[c]==='object'?JSON.stringify(r[c]):r[c])+'</code></td>').join('')+'</tr>').join('')+'</tbody></table>';
 }
 async function load() {
-  const [status, schedules, deliveries, processors, routes, waits, adapters, events] = await Promise.all(['/api/status','/api/schedules','/api/deliveries','/api/processors','/api/routes','/api/waits','/api/adapters','/api/events'].map(u=>fetch(u).then(r=>r.json())));
+  const [status, spaces, sources, schedules, deliveries, processors, routes, waits, adapters, events] = await Promise.all(['/api/status','/api/spaces','/api/sources','/api/schedules','/api/deliveries','/api/processors','/api/routes','/api/waits','/api/adapters','/api/events'].map(u=>fetch(u).then(r=>r.json())));
   document.querySelector('#db').textContent = status.database;
   document.querySelector('#counts').innerHTML = Object.entries(status.counts).map(([k,v])=>`<div class="card"><div class="muted">${esc(k.replaceAll('_',' '))}</div><div class="value">${v}</div></div>`).join('');
   document.querySelector('#supervisor').innerHTML = status.supervisor ? table([status.supervisor], ['state','pid','heartbeat_at','last_cycle_at','dispatch_enabled','web_url','last_error']) : '<p class="muted">Never started</p>';
+  document.querySelector('#spaces').innerHTML = table(spaces, ['id','name','created_at']);
+  document.querySelector('#sources').innerHTML = richTable(sources, ['id','space_id','kind','state','config','created_at'], ['config']);
   document.querySelector('#schedules').innerHTML = table(schedules, ['id','adapter','enabled','every_seconds','next_run_at','last_state','last_error']);
   document.querySelector('#deliveries').innerHTML = table(deliveries.filter(x=>['pending','accepted'].includes(x.state)), ['id','state','consumer','event_id','created_at']);
   document.querySelector('#processors').innerHTML = richTable(processors, ['id','state','processor','summary','facts','decision','actions','updated_at'], ['summary','facts','decision','actions']);
