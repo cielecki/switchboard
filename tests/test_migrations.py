@@ -79,8 +79,12 @@ class MigrationTest(unittest.TestCase):
                 version = migrated.execute(
                     "SELECT value FROM schema_meta WHERE key='schema_version'"
                 ).fetchone()[0]
+                schedule_table = migrated.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='adapter_schedules'"
+                ).fetchone()
             self.assertIn("'accepted'", sql)
-            self.assertEqual(version, "2")
+            self.assertEqual(version, "3")
+            self.assertIsNotNone(schedule_table)
 
 
 if __name__ == "__main__":

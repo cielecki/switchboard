@@ -31,6 +31,9 @@ sufficient proof of a mutation.
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json wait list --state active
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json delivery list --state pending
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json adapter runs --limit 20
+"${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json schedule list
+"${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json supervisor status
+"${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json service status
 ```
 
 Register a wait only when the current task has a stable consumer identifier and a concrete event
@@ -64,3 +67,7 @@ To observe an existing ingest store, call `adapter ingest-shadow --status-script
 This is deliberately read-only: it invokes ingest's supported status command and must not inspect
 or edit the store directly. Read [the adapter contract](../../docs/adapters.md) before integrating
 another source.
+
+Manage recurring adapters only through `schedule` commands. `supervisor once` is appropriate for a
+verified manual cycle; `service install` manages the persistent macOS launch agent. Do not edit the
+database, launchd plist, or supervisor lock file directly. The web dashboard remains read-only.

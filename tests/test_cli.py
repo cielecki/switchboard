@@ -14,7 +14,10 @@ class CliTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.db = str(Path(self.directory.name) / "switchboard.sqlite3")
-        self.environment = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1] / "src"))
+        self.environment = dict(
+            os.environ,
+            PYTHONPATH=str(Path(__file__).parents[1] / "plugins" / "switchboard" / "src"),
+        )
 
     def run_cli(self, *arguments: str) -> dict:
         result = subprocess.run(
@@ -60,6 +63,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(event["matched_waits"], [wait["id"]])
         status = self.run_cli("status")
         self.assertEqual(status["counts"]["pending_deliveries"], 1)
+        self.assertEqual(status["schema_version"], 3)
 
 
 if __name__ == "__main__":

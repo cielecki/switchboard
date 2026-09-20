@@ -24,6 +24,9 @@ owns no mutations. Delivery adapters wake agent hosts without taking ownership o
 - **Delivery:** work owed to a consumer, distinct from transport acceptance or acknowledgement.
 - **Route:** ordered deterministic policy directing an event to a processor or destination.
 - **Processor outcome:** structured record of what a specialized workflow changed.
+- **Schedule:** CLI-managed cadence and private adapter configuration stored outside the plugin.
+- **Supervisor:** single-instance loop that runs schedules, dispatches deliveries, records a
+  heartbeat, and hosts read-only observability.
 
 The [source adapter contract](adapters.md) is the only ingestion boundary. Adapters produce
 snapshots; the core validates, records health, deduplicates events, and evaluates waits.
@@ -51,3 +54,7 @@ folded into the generic core.
 Delivery follows the same split. A broker accepting a stable request changes a delivery from
 `pending` to `accepted`; only the destination consumer can change it to `acknowledged` after the
 matched work is complete.
+
+The supervisor never converts transport acceptance into task completion. It isolates adapter and
+delivery failures, advances schedules deterministically, and exposes its last heartbeat and error
+without making the web interface a control surface.

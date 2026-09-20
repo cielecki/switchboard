@@ -19,11 +19,13 @@ The first vertical slice provides:
 - a versioned JSON adapter contract and adapter-run history;
 - a read-only shadow adapter for existing ingest stores;
 - delivery through the existing local `chats` broker, with acceptance and completion tracked
-  separately.
+  separately;
+- persistent adapter schedules, automatic delivery dispatch, and supervisor heartbeats;
+- a CLI-installed macOS launch agent that runs the supervisor and read-only web UI.
 
-Long-running source supervision, routing tables, processor outcomes, and service installation are
-the next milestones. Existing capture and lead-processing systems can integrate as adapters before
-any migration or replacement.
+Routing tables, processor outcomes, and additional source adapters are the next milestones.
+Existing capture and lead-processing systems can integrate as adapters before any migration or
+replacement.
 
 ## Try it
 
@@ -78,6 +80,34 @@ switchboard --json delivery dispatch <delivery-id> \
 Broker acceptance changes the delivery to `accepted`, not `acknowledged`. The destination task
 receives exact CLI commands for inspecting and acknowledging the delivery after completing its
 work. See [the adapter contract](plugins/switchboard/docs/adapters.md) for third-party adapters.
+
+## Persistent supervisor
+
+Create a recurring ingest observation schedule, then run one cycle:
+
+```bash
+switchboard --json schedule add-ingest-shadow ingest \
+  --status-script /absolute/path/to/ingest/status.py --every 60
+switchboard --json supervisor once --relay /absolute/path/to/chats/send-message.py
+```
+
+The long-running supervisor executes due schedules, retries failed deliveries with bounded cadence,
+records its heartbeat and errors, and serves the web UI:
+
+```bash
+switchboard supervisor run --relay /absolute/path/to/chats/send-message.py
+```
+
+On macOS, install it as a persistent per-user launch agent entirely through the CLI:
+
+```bash
+switchboard --json service install --relay /absolute/path/to/chats/send-message.py
+switchboard --json service status
+```
+
+The default web address is <http://127.0.0.1:8765>. Re-run `service install` after updating the
+plugin so launchd points at the newly installed version. See
+[the supervisor guide](plugins/switchboard/docs/supervisor.md).
 
 ## Plugin marketplace
 

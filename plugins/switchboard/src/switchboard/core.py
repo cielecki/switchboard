@@ -7,7 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -189,6 +189,229 @@ def finish_adapter_run(
 
 def list_adapter_runs(db: Database, limit: int = 50) -> list[dict[str, Any]]:
     return db.rows("SELECT * FROM adapter_runs ORDER BY started_at DESC LIMIT ?", (limit,))
+
+
+def upsert_ingest_schedule(
+    db: Database,
+    schedule_id: str,
+    *,
+    status_script: str | Path,
+    every_seconds: int,
+    space_id: str = "personal-ingest",
+    timeout: int = 120,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    if not schedule_id:
+        raise ValueError("schedule id cannot be empty")
+    if every_seconds < 1:
+        raise ValueError("schedule interval must be at least one second")
+    if timeout < 1:
+        raise ValueError("schedule timeout must be at least one second")
+    script = Path(status_script).expanduser().resolve()
+    if not script.is_file():
+        raise ValueError(f"ingest status script not found: {script}")
+    db.initialize()
+    timestamp = now()
+    config = {
+        "status_script": str(script),
+        "space_id": space_id,
+        "timeout": timeout,
+    }
+    with db.transaction() as connection:
+        connection.execute(
+            "INSERT INTO adapter_schedules(id, adapter, config_json, every_seconds, enabled, "
+            "next_run_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, "
+            "config_json=excluded.config_json, every_seconds=excluded.every_seconds, "
+            "enabled=excluded.enabled, next_run_at=excluded.next_run_at, "
+            "updated_at=excluded.updated_at",
+            (
+                schedule_id,
+                "ingest-shadow",
+                json.dumps(config, sort_keys=True),
+                every_seconds,
+                int(enabled),
+                timestamp,
+                timestamp,
+                timestamp,
+            ),
+        )
+        audit(
+            connection,
+            command="schedule.upsert",
+            entity_type="adapter_schedule",
+            entity_id=schedule_id,
+            payload={
+                "adapter": "ingest-shadow",
+                "every_seconds": every_seconds,
+                "enabled": enabled,
+                "space_id": space_id,
+                "timeout": timeout,
+            },
+        )
+    return get_schedule(db, schedule_id)
+
+
+def get_schedule(db: Database, schedule_id: str) -> dict[str, Any]:
+    row = db.row("SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,))
+    if row is None:
+        raise ValueError(f"schedule not found: {schedule_id}")
+    schedule = decode_json_fields(row, "config_json")
+    schedule["enabled"] = bool(schedule["enabled"])
+    return schedule
+
+
+def list_schedules(db: Database, *, enabled: bool | None = None) -> list[dict[str, Any]]:
+    query = "SELECT * FROM adapter_schedules"
+    params: tuple[Any, ...] = ()
+    if enabled is not None:
+        query += " WHERE enabled=?"
+        params = (int(enabled),)
+    query += " ORDER BY id"
+    schedules = [decode_json_fields(row, "config_json") for row in db.rows(query, params)]
+    for schedule in schedules:
+        schedule["enabled"] = bool(schedule["enabled"])
+    return schedules
+
+
+def set_schedule_enabled(db: Database, schedule_id: str, enabled: bool) -> dict[str, Any]:
+    timestamp = now()
+    with db.transaction() as connection:
+        changed = connection.execute(
+            "UPDATE adapter_schedules SET enabled=?, next_run_at=?, updated_at=? WHERE id=?",
+            (int(enabled), timestamp, timestamp, schedule_id),
+        ).rowcount
+        if not changed:
+            raise ValueError(f"schedule not found: {schedule_id}")
+        audit(
+            connection,
+            command="schedule.enable" if enabled else "schedule.disable",
+            entity_type="adapter_schedule",
+            entity_id=schedule_id,
+            payload={"enabled": enabled},
+        )
+    return get_schedule(db, schedule_id)
+
+
+def delete_schedule(db: Database, schedule_id: str) -> dict[str, Any]:
+    with db.transaction() as connection:
+        changed = connection.execute(
+            "DELETE FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).rowcount
+        if not changed:
+            raise ValueError(f"schedule not found: {schedule_id}")
+        audit(
+            connection,
+            command="schedule.delete",
+            entity_type="adapter_schedule",
+            entity_id=schedule_id,
+            payload={},
+        )
+    return {"id": schedule_id, "deleted": True}
+
+
+def due_schedules(db: Database, at: str | None = None) -> list[dict[str, Any]]:
+    timestamp = at or now()
+    schedules = [
+        decode_json_fields(row, "config_json")
+        for row in db.rows(
+            "SELECT * FROM adapter_schedules WHERE enabled=1 AND next_run_at<=? "
+            "ORDER BY next_run_at, id",
+            (timestamp,),
+        )
+    ]
+    for schedule in schedules:
+        schedule["enabled"] = True
+    return schedules
+
+
+def mark_schedule_started(db: Database, schedule_id: str, started_at: str | None = None) -> None:
+    timestamp = started_at or now()
+    with db.transaction() as connection:
+        connection.execute(
+            "UPDATE adapter_schedules SET last_started_at=?, updated_at=? WHERE id=?",
+            (timestamp, timestamp, schedule_id),
+        )
+
+
+def mark_schedule_finished(
+    db: Database,
+    schedule_id: str,
+    *,
+    state: str,
+    error: str | None = None,
+    finished_at: str | None = None,
+) -> dict[str, Any]:
+    if state not in {"completed", "failed"}:
+        raise ValueError("schedule state must be completed or failed")
+    timestamp = finished_at or now()
+    schedule = get_schedule(db, schedule_id)
+    next_run_at = (datetime.fromisoformat(timestamp) + timedelta(seconds=schedule["every_seconds"])).isoformat()
+    with db.transaction() as connection:
+        connection.execute(
+            "UPDATE adapter_schedules SET last_finished_at=?, last_state=?, last_error=?, "
+            "next_run_at=?, updated_at=? WHERE id=?",
+            (timestamp, state, error, next_run_at, timestamp, schedule_id),
+        )
+    return get_schedule(db, schedule_id)
+
+
+def update_supervisor_state(
+    db: Database,
+    *,
+    state: str,
+    pid: int | None = None,
+    started_at: str | None = None,
+    heartbeat_at: str | None = None,
+    stopped_at: str | None = None,
+    web_url: str | None = None,
+    dispatch_enabled: bool = False,
+    last_cycle_at: str | None = None,
+    last_error: str | None = None,
+) -> dict[str, Any]:
+    if state not in {"starting", "running", "stopped", "failed"}:
+        raise ValueError(f"unsupported supervisor state: {state}")
+    db.initialize()
+    with db.transaction() as connection:
+        connection.execute(
+            "INSERT INTO supervisor_state(id, state, pid, started_at, heartbeat_at, stopped_at, "
+            "web_url, dispatch_enabled, last_cycle_at, last_error) VALUES(1,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET state=excluded.state, pid=excluded.pid, "
+            "started_at=COALESCE(excluded.started_at, supervisor_state.started_at), "
+            "heartbeat_at=excluded.heartbeat_at, stopped_at=excluded.stopped_at, "
+            "web_url=excluded.web_url, dispatch_enabled=excluded.dispatch_enabled, "
+            "last_cycle_at=excluded.last_cycle_at, last_error=excluded.last_error",
+            (
+                state,
+                pid,
+                started_at,
+                heartbeat_at,
+                stopped_at,
+                web_url,
+                int(dispatch_enabled),
+                last_cycle_at,
+                last_error,
+            ),
+        )
+    return supervisor_status(db)
+
+
+def supervisor_status(db: Database) -> dict[str, Any] | None:
+    row = db.row("SELECT * FROM supervisor_state WHERE id=1")
+    if row is not None:
+        row["dispatch_enabled"] = bool(row["dispatch_enabled"])
+    return row
+
+
+def recover_interrupted_runs(db: Database) -> int:
+    db.initialize()
+    timestamp = now()
+    with db.transaction() as connection:
+        return connection.execute(
+            "UPDATE adapter_runs SET state='failed', completed_at=?, "
+            "detail='supervisor restarted before adapter completed' WHERE state='running'",
+            (timestamp,),
+        ).rowcount
 
 
 def create_wait(
@@ -607,7 +830,15 @@ def status(db: Database) -> dict[str, Any]:
     db.initialize()
     counts: dict[str, int] = {}
     with db.connect() as connection:
-        for table in ("spaces", "sources", "events", "waits", "deliveries", "adapter_runs"):
+        for table in (
+            "spaces",
+            "sources",
+            "events",
+            "waits",
+            "deliveries",
+            "adapter_runs",
+            "adapter_schedules",
+        ):
             counts[table] = connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         counts["active_waits"] = connection.execute(
             "SELECT count(*) FROM waits WHERE state='active'"
@@ -618,4 +849,9 @@ def status(db: Database) -> dict[str, Any]:
         counts["accepted_deliveries"] = connection.execute(
             "SELECT count(*) FROM deliveries WHERE state='accepted'"
         ).fetchone()[0]
-    return {"database": str(db.path), "schema_version": 2, "counts": counts}
+    return {
+        "database": str(db.path),
+        "schema_version": 3,
+        "counts": counts,
+        "supervisor": supervisor_status(db),
+    }

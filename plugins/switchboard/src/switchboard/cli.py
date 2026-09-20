@@ -11,6 +11,8 @@ from typing import Any
 from . import core
 from .adapters import run_command_adapter, run_ingest_shadow
 from .db import Database
+from .service import install_launch_agent, service_status, uninstall_launch_agent
+from .supervisor import run_forever, run_once
 from .web import serve
 
 
@@ -87,6 +89,26 @@ def build_parser() -> argparse.ArgumentParser:
     runs = adapter.add_parser("runs", help="show recent adapter runs")
     runs.add_argument("--limit", type=int, default=50)
 
+    schedule = commands.add_parser(
+        "schedule", help="manage persistent adapter schedules"
+    ).add_subparsers(dest="verb", required=True)
+    add_ingest = schedule.add_parser(
+        "add-ingest-shadow", help="schedule the read-only ingest adapter"
+    )
+    add_ingest.add_argument("id")
+    add_ingest.add_argument("--status-script", required=True)
+    add_ingest.add_argument("--every", type=int, required=True, help="interval in seconds")
+    add_ingest.add_argument("--space", default="personal-ingest")
+    add_ingest.add_argument("--timeout", type=int, default=120)
+    add_ingest.add_argument("--disabled", action="store_true")
+    schedule.add_parser("list")
+    enable = schedule.add_parser("enable")
+    enable.add_argument("id")
+    disable = schedule.add_parser("disable")
+    disable.add_argument("id")
+    delete = schedule.add_parser("delete")
+    delete.add_argument("id")
+
     wait = commands.add_parser("wait", help="manage durable waits").add_subparsers(dest="verb", required=True)
     create = wait.add_parser("create")
     create.add_argument("--space", required=True)
@@ -131,13 +153,41 @@ def build_parser() -> argparse.ArgumentParser:
     server = commands.add_parser("serve", help="serve the read-only operations UI")
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8765)
+
+    supervisor = commands.add_parser(
+        "supervisor", help="run scheduled adapters and delivery dispatch"
+    ).add_subparsers(dest="verb", required=True)
+    supervisor.add_parser("status")
+    for verb in ("once", "run"):
+        supervise = supervisor.add_parser(verb)
+        supervise.add_argument("--relay", default=os.environ.get("SWITCHBOARD_CHATS_RELAY"))
+        supervise.add_argument("--activate-inactive", action="store_true")
+        supervise.add_argument("--delivery-timeout", type=int, default=30)
+        supervise.add_argument("--delivery-retry", type=int, default=60)
+        if verb == "run":
+            supervise.add_argument("--host", default="127.0.0.1")
+            supervise.add_argument("--port", type=int, default=8765)
+            supervise.add_argument("--poll", type=int, default=5)
+
+    service = commands.add_parser(
+        "service", help="manage the persistent macOS launch agent"
+    ).add_subparsers(dest="verb", required=True)
+    install = service.add_parser("install")
+    install.add_argument("--relay", default=os.environ.get("SWITCHBOARD_CHATS_RELAY"))
+    install.add_argument("--activate-inactive", action="store_true")
+    install.add_argument("--host", default="127.0.0.1")
+    install.add_argument("--port", type=int, default=8765)
+    install.add_argument("--poll", type=int, default=5)
+    install.add_argument("--delivery-retry", type=int, default=60)
+    service.add_parser("uninstall")
+    service.add_parser("status")
     return parser
 
 
 def dispatch(args: argparse.Namespace, db: Database) -> Any:
     if args.command == "init":
         db.initialize()
-        return {"database": str(db.path), "schema_version": 2}
+        return {"database": str(db.path), "schema_version": 3}
     if args.command == "status":
         return core.status(db)
     if args.command == "space":
@@ -165,6 +215,24 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 timeout=args.timeout,
             )
         return core.list_adapter_runs(db, args.limit)
+    if args.command == "schedule":
+        if args.verb == "add-ingest-shadow":
+            return core.upsert_ingest_schedule(
+                db,
+                args.id,
+                status_script=args.status_script,
+                every_seconds=args.every,
+                space_id=args.space,
+                timeout=args.timeout,
+                enabled=not args.disabled,
+            )
+        if args.verb == "enable":
+            return core.set_schedule_enabled(db, args.id, True)
+        if args.verb == "disable":
+            return core.set_schedule_enabled(db, args.id, False)
+        if args.verb == "delete":
+            return core.delete_schedule(db, args.id)
+        return core.list_schedules(db)
     if args.command == "wait":
         if args.verb == "create":
             predicate = {
@@ -223,6 +291,41 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
     if args.command == "serve":
         serve(db, args.host, args.port)
         return None
+    if args.command == "supervisor":
+        if args.verb == "status":
+            return core.supervisor_status(db)
+        options = {
+            "relay": args.relay,
+            "cli_command": own_cli_command(),
+            "activate_inactive": args.activate_inactive,
+            "delivery_timeout": args.delivery_timeout,
+            "delivery_retry_seconds": args.delivery_retry,
+        }
+        if args.verb == "once":
+            return run_once(db, **options)
+        run_forever(
+            db,
+            host=args.host,
+            port=args.port,
+            poll_seconds=args.poll,
+            **options,
+        )
+        return core.supervisor_status(db)
+    if args.command == "service":
+        if args.verb == "install":
+            return install_launch_agent(
+                db,
+                cli_command=service_cli_command(),
+                relay=args.relay,
+                host=args.host,
+                port=args.port,
+                poll_seconds=args.poll,
+                delivery_retry_seconds=args.delivery_retry,
+                activate_inactive=args.activate_inactive,
+            )
+        if args.verb == "uninstall":
+            return uninstall_launch_agent()
+        return service_status()
     raise ValueError(f"unsupported command: {args.command}")
 
 
@@ -233,6 +336,13 @@ def own_cli_command() -> list[str]:
     bundled = Path(__file__).resolve().parents[2] / "bin" / "switchboard"
     if bundled.is_file():
         return [str(bundled)]
+    return [sys.executable, "-m", "switchboard.cli"]
+
+
+def service_cli_command() -> list[str]:
+    bundled = Path(__file__).resolve().parents[2] / "bin" / "switchboard"
+    if bundled.is_file():
+        return [sys.executable, str(bundled)]
     return [sys.executable, "-m", "switchboard.cli"]
 
 

@@ -109,6 +109,34 @@ CREATE TABLE IF NOT EXISTS adapter_runs (
     detail TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS adapter_schedules (
+    id TEXT PRIMARY KEY,
+    adapter TEXT NOT NULL,
+    config_json TEXT NOT NULL,
+    every_seconds INTEGER NOT NULL CHECK(every_seconds > 0),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+    next_run_at TEXT NOT NULL,
+    last_started_at TEXT,
+    last_finished_at TEXT,
+    last_state TEXT CHECK(last_state IS NULL OR last_state IN ('completed', 'failed')),
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS supervisor_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    state TEXT NOT NULL CHECK(state IN ('starting', 'running', 'stopped', 'failed')),
+    pid INTEGER,
+    started_at TEXT,
+    heartbeat_at TEXT,
+    stopped_at TEXT,
+    web_url TEXT,
+    dispatch_enabled INTEGER NOT NULL DEFAULT 0 CHECK(dispatch_enabled IN (0, 1)),
+    last_cycle_at TEXT,
+    last_error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor TEXT NOT NULL,
@@ -125,8 +153,9 @@ CREATE INDEX IF NOT EXISTS idx_deliveries_state ON deliveries(state, created_at)
 CREATE INDEX IF NOT EXISTS idx_delivery_attempts_delivery ON delivery_attempts(delivery_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_source_health_source ON source_health(source_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_runs_started ON adapter_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_adapter_schedules_due ON adapter_schedules(enabled, next_run_at);
 
-INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '2');
+INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '3');
 """
 
 

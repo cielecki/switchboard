@@ -31,6 +31,8 @@ HTML = """<!doctype html>
 <body><main>
   <header><div><h1>Switchboard</h1><div class="muted">Read-only operations view</div></div><div id="db" class="muted"></div></header>
   <div id="counts" class="grid"></div>
+  <section><h2>Supervisor</h2><div id="supervisor"></div></section>
+  <section><h2>Schedules</h2><div id="schedules"></div></section>
   <section><h2>Open deliveries</h2><div id="deliveries"></div></section>
   <section><h2>Active waits</h2><div id="waits"></div></section>
   <section><h2>Adapter runs</h2><div id="adapters"></div></section>
@@ -43,9 +45,11 @@ function table(rows, cols) {
     rows.map(r=>'<tr>'+cols.map(c=>'<td><code>'+esc(typeof r[c]==='object'?JSON.stringify(r[c]):r[c])+'</code></td>').join('')+'</tr>').join('')+'</tbody></table>';
 }
 async function load() {
-  const [status, deliveries, waits, adapters, events] = await Promise.all(['/api/status','/api/deliveries','/api/waits','/api/adapters','/api/events'].map(u=>fetch(u).then(r=>r.json())));
+  const [status, schedules, deliveries, waits, adapters, events] = await Promise.all(['/api/status','/api/schedules','/api/deliveries','/api/waits','/api/adapters','/api/events'].map(u=>fetch(u).then(r=>r.json())));
   document.querySelector('#db').textContent = status.database;
   document.querySelector('#counts').innerHTML = Object.entries(status.counts).map(([k,v])=>`<div class="card"><div class="muted">${esc(k.replaceAll('_',' '))}</div><div class="value">${v}</div></div>`).join('');
+  document.querySelector('#supervisor').innerHTML = status.supervisor ? table([status.supervisor], ['state','pid','heartbeat_at','last_cycle_at','dispatch_enabled','web_url','last_error']) : '<p class="muted">Never started</p>';
+  document.querySelector('#schedules').innerHTML = table(schedules, ['id','adapter','enabled','every_seconds','next_run_at','last_state','last_error']);
   document.querySelector('#deliveries').innerHTML = table(deliveries.filter(x=>['pending','accepted'].includes(x.state)), ['id','state','consumer','event_id','created_at']);
   document.querySelector('#waits').innerHTML = table(waits.filter(x=>x.state==='active'), ['id','consumer','purpose','predicate','created_at']);
   document.querySelector('#adapters').innerHTML = table(adapters, ['id','adapter','state','discovered_sources','emitted_events','deduplicated_events','started_at']);
@@ -85,6 +89,7 @@ def handler_for(db: Database) -> type[BaseHTTPRequestHandler]:
                     "/api/sources": lambda: core.list_sources(db),
                     "/api/spaces": lambda: core.list_spaces(db),
                     "/api/adapters": lambda: core.list_adapter_runs(db),
+                    "/api/schedules": lambda: core.list_schedules(db),
                 }
                 if path in endpoints:
                     self.send_json(endpoints[path]())
