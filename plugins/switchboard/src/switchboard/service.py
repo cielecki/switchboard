@@ -86,6 +86,9 @@ def install_launch_agent(
     payload = {
         "Label": LABEL,
         "ProgramArguments": arguments,
+        "EnvironmentVariables": {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+        },
         "RunAtLoad": True,
         "KeepAlive": True,
         "ProcessType": "Background",

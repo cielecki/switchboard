@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import plistlib
 import subprocess
 import tempfile
@@ -46,6 +47,7 @@ class ServiceTest(unittest.TestCase):
             self.assertTrue(installed["loaded"])
             self.assertIn("supervisor", payload["ProgramArguments"])
             self.assertIn("9876", payload["ProgramArguments"])
+            self.assertEqual(payload["EnvironmentVariables"]["PATH"], os.environ["PATH"])
             self.assertIn("bootstrap", [command[1] for command in self.commands])
 
             removed = uninstall_launch_agent(runner=self.runner)
