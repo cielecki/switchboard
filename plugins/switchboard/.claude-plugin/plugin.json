@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "switchboard",
   "displayName": "Switchboard",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "CLI-managed routing tables, structured processor outcomes, and durable waits for AI agents.",
   "author": {
     "name": "Maciej Cielecki",

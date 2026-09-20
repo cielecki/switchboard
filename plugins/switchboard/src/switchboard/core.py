@@ -1263,7 +1263,7 @@ def acknowledge_delivery(db: Database, delivery_id: str) -> dict[str, Any]:
 def status(db: Database) -> dict[str, Any]:
     db.initialize()
     counts: dict[str, int] = {}
-    with db.connect() as connection:
+    with db.session() as connection:
         for table in (
             "spaces",
             "sources",

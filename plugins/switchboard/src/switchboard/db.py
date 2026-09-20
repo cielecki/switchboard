@@ -235,8 +235,16 @@ class Database:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
+    @contextmanager
+    def session(self) -> Iterator[sqlite3.Connection]:
+        connection = self.connect()
+        try:
+            yield connection
+        finally:
+            connection.close()
+
     def initialize(self) -> None:
-        with self.connect() as connection:
+        with self.session() as connection:
             existing = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='deliveries'"
             ).fetchone()
@@ -256,6 +264,7 @@ class Database:
                     """
                 )
             connection.executescript(SCHEMA)
+            connection.commit()
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -272,7 +281,7 @@ class Database:
 
     def rows(self, query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         self.initialize()
-        with self.connect() as connection:
+        with self.session() as connection:
             return [dict(row) for row in connection.execute(query, params).fetchall()]
 
     def row(self, query: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
