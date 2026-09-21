@@ -10,6 +10,7 @@ from typing import Any
 
 from .. import core
 from ..db import Database
+from ..process import run_bounded
 from .base import AdapterError, apply_snapshot
 
 
@@ -80,7 +81,7 @@ def run_ingest_shadow(
     python: str = sys.executable,
     space_id: str = "personal-ingest",
     timeout: int = 120,
-    runner: Any = subprocess.run,
+    runner: Any = run_bounded,
 ) -> dict[str, Any]:
     script = Path(status_script).expanduser().resolve()
     if not script.is_file():

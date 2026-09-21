@@ -270,6 +270,7 @@ def upsert_inbound_schedule(
     space_id: str = "inbound-leads",
     discovery_script: str | Path | None = None,
     slack_discovery_script: str | Path | None = None,
+    source_mode: str = "both",
     timeout: int = 240,
     enabled: bool = True,
 ) -> dict[str, Any]:
@@ -281,6 +282,12 @@ def upsert_inbound_schedule(
         raise ValueError("schedule interval must be at least one second")
     if timeout < 1:
         raise ValueError("schedule timeout must be at least one second")
+    if source_mode not in {"both", "gmail", "slack"}:
+        raise ValueError("inbound source mode must be both, gmail, or slack")
+    if source_mode == "gmail" and discovery_script is None:
+        raise ValueError("gmail source mode requires a discovery script")
+    if source_mode == "slack" and slack_discovery_script is None:
+        raise ValueError("slack source mode requires a Slack discovery script")
     ledger = Path(ledger_script).expanduser().resolve()
     if not ledger.is_file():
         raise ValueError(f"inbound ledger script not found: {ledger}")
@@ -303,6 +310,7 @@ def upsert_inbound_schedule(
         "timeout": timeout,
         "discovery_script": str(discovery) if discovery else None,
         "slack_discovery_script": str(slack_discovery) if slack_discovery else None,
+        "source_mode": source_mode,
     }
     with db.transaction() as connection:
         connection.execute(
@@ -336,7 +344,74 @@ def upsert_inbound_schedule(
                 "space_id": space_id,
                 "discovery_enabled": discovery is not None,
                 "slack_discovery_enabled": slack_discovery is not None,
+                "source_mode": source_mode,
                 "timeout": timeout,
+            },
+        )
+    return get_schedule(db, schedule_id)
+
+
+def upsert_timer_schedule(
+    db: Database,
+    schedule_id: str,
+    *,
+    space_id: str,
+    source_id: str,
+    event_type: str,
+    every_seconds: int,
+    first_run_at: str | None = None,
+    attributes: dict[str, Any] | None = None,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    if not all(value.strip() for value in (schedule_id, space_id, source_id, event_type)):
+        raise ValueError("timer schedule id, space, source, and event type cannot be empty")
+    if every_seconds < 1:
+        raise ValueError("schedule interval must be at least one second")
+    timestamp = now()
+    requested_first_run = first_run_at or timestamp
+    parsed_first_run = datetime.fromisoformat(requested_first_run)
+    if parsed_first_run.tzinfo is None:
+        raise ValueError("timer first run must include a timezone")
+    next_run_at = parsed_first_run.astimezone(UTC).isoformat()
+    config = {
+        "space_id": space_id,
+        "source_id": source_id,
+        "event_type": event_type,
+        "attributes": attributes or {},
+    }
+    db.initialize()
+    with db.transaction() as connection:
+        connection.execute(
+            "INSERT INTO adapter_schedules(id, adapter, config_json, every_seconds, enabled, "
+            "next_run_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, "
+            "config_json=excluded.config_json, every_seconds=excluded.every_seconds, "
+            "enabled=excluded.enabled, next_run_at=excluded.next_run_at, "
+            "updated_at=excluded.updated_at",
+            (
+                schedule_id,
+                "timer",
+                json.dumps(config, sort_keys=True),
+                every_seconds,
+                int(enabled),
+                next_run_at,
+                timestamp,
+                timestamp,
+            ),
+        )
+        audit(
+            connection,
+            command="schedule.upsert",
+            entity_type="adapter_schedule",
+            entity_id=schedule_id,
+            payload={
+                "adapter": "timer",
+                "space_id": space_id,
+                "source_id": source_id,
+                "event_type": event_type,
+                "every_seconds": every_seconds,
+                "first_run_at": next_run_at,
+                "enabled": enabled,
             },
         )
     return get_schedule(db, schedule_id)
@@ -436,7 +511,16 @@ def mark_schedule_finished(
         raise ValueError("schedule state must be completed or failed")
     timestamp = finished_at or now()
     schedule = get_schedule(db, schedule_id)
-    next_run_at = (datetime.fromisoformat(timestamp) + timedelta(seconds=schedule["every_seconds"])).isoformat()
+    finished = datetime.fromisoformat(timestamp)
+    cadence_base = (
+        datetime.fromisoformat(schedule["next_run_at"])
+        if schedule["adapter"] == "timer"
+        else finished
+    )
+    next_run = cadence_base + timedelta(seconds=schedule["every_seconds"])
+    while next_run <= finished:
+        next_run += timedelta(seconds=schedule["every_seconds"])
+    next_run_at = next_run.isoformat()
     with db.transaction() as connection:
         connection.execute(
             "UPDATE adapter_schedules SET last_finished_at=?, last_state=?, last_error=?, "
@@ -1198,17 +1282,24 @@ def list_processor_runs(
     state: str | None = None,
     processor: str | None = None,
     event_id: str | None = None,
+    space_id: str | None = None,
 ) -> list[dict[str, Any]]:
     filters: list[str] = []
     params: list[Any] = []
     for field, value in (("state", state), ("processor", processor), ("event_id", event_id)):
         if value:
-            filters.append(f"{field}=?")
+            filters.append(f"pr.{field}=?")
             params.append(value)
-    query = "SELECT * FROM processor_runs"
+    if space_id:
+        filters.append("e.space_id=?")
+        params.append(space_id)
+    query = (
+        "SELECT pr.*, e.space_id FROM processor_runs pr "
+        "JOIN events e ON e.id=pr.event_id"
+    )
     if filters:
         query += " WHERE " + " AND ".join(filters)
-    query += " ORDER BY created_at DESC"
+    query += " ORDER BY pr.created_at DESC"
     return [_decode_processor_run(row) for row in db.rows(query, tuple(params))]
 
 
@@ -1449,6 +1540,14 @@ def finish_processor_run(
     timestamp = now()
     completed_at = timestamp if state == "completed" else None
     with db.transaction() as connection:
+        current = connection.execute(
+            "SELECT decision_json FROM processor_runs WHERE id=?", (run_id,)
+        ).fetchone()
+        decision_payload = dict(decision or {})
+        if current is not None:
+            previous_decision = json.loads(current["decision_json"])
+            if "review" in previous_decision and "review" not in decision_payload:
+                decision_payload["review"] = previous_decision["review"]
         attempt = connection.execute(
             "SELECT * FROM processor_attempts WHERE processor_run_id=? AND state='running' "
             "ORDER BY started_at DESC LIMIT 1",
@@ -1464,7 +1563,7 @@ def finish_processor_run(
                 state,
                 summary,
                 json.dumps(facts or {}, sort_keys=True),
-                json.dumps(decision or {}, sort_keys=True),
+                json.dumps(decision_payload, sort_keys=True),
                 json.dumps(actions or [], sort_keys=True),
                 error,
                 completed_at,
@@ -1494,9 +1593,68 @@ def finish_processor_run(
                 "state": state,
                 "summary": summary,
                 "facts": facts or {},
-                "decision": decision or {},
+                "decision": decision_payload,
                 "actions": actions or [],
                 "error": error,
+            },
+        )
+    return get_processor_run(db, run_id)
+
+
+def resolve_processor_review(
+    db: Database,
+    run_id: str,
+    *,
+    resolution: str,
+    summary: str = "",
+    decision: dict[str, Any] | None = None,
+    actions: list[Any] | None = None,
+) -> dict[str, Any]:
+    if resolution not in {"complete", "retry"}:
+        raise ValueError("review resolution must be complete or retry")
+    timestamp = now()
+    with db.transaction() as connection:
+        row = connection.execute(
+            "SELECT * FROM processor_runs WHERE id=? AND state='needs-review'", (run_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"needs-review processor run not found: {run_id}")
+        previous_decision = json.loads(row["decision_json"])
+        previous_actions = json.loads(row["actions_json"])
+        review = {
+            "resolved_at": timestamp,
+            "resolution": resolution,
+            **(decision or {}),
+        }
+        previous_decision["review"] = review
+        previous_actions.extend(actions or [])
+        state = "completed" if resolution == "complete" else "pending"
+        completed_at = timestamp if state == "completed" else None
+        connection.execute(
+            "UPDATE processor_runs SET state=?, summary=?, decision_json=?, actions_json=?, "
+            "error=NULL, completed_at=?, updated_at=? WHERE id=?",
+            (
+                state,
+                summary or row["summary"],
+                json.dumps(previous_decision, sort_keys=True),
+                json.dumps(previous_actions, sort_keys=True),
+                completed_at,
+                timestamp,
+                run_id,
+            ),
+        )
+        if resolution == "retry":
+            _requeue_processor_delivery(connection, run_id)
+        audit(
+            connection,
+            command="processor.review-resolve",
+            entity_type="processor_run",
+            entity_id=run_id,
+            payload={
+                "resolution": resolution,
+                "summary": summary,
+                "decision": decision or {},
+                "actions": actions or [],
             },
         )
     return get_processor_run(db, run_id)
@@ -1886,6 +2044,9 @@ def status(db: Database) -> dict[str, Any]:
         ).fetchone()[0]
         counts["open_processor_runs"] = connection.execute(
             "SELECT count(*) FROM processor_runs WHERE state IN ('pending','running','needs-review')"
+        ).fetchone()[0]
+        counts["open_processor_alerts"] = connection.execute(
+            "SELECT count(*) FROM processor_alerts WHERE state='open'"
         ).fetchone()[0]
         counts["pending_processor_deliveries"] = connection.execute(
             "SELECT count(*) FROM processor_deliveries WHERE state='pending'"

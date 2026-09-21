@@ -9,6 +9,7 @@ from typing import Any
 
 from .. import core
 from ..db import Database
+from ..process import run_bounded
 from .base import AdapterError, apply_snapshot
 
 
@@ -114,18 +115,25 @@ def run_inbound_leads(
     space_id: str = "inbound-leads",
     discovery_script: str | Path | None = None,
     slack_discovery_script: str | Path | None = None,
+    source_mode: str = "both",
     python: str = sys.executable,
     timeout: int = 240,
-    runner: Any = subprocess.run,
+    runner: Any = run_bounded,
 ) -> dict[str, Any]:
     if not profile:
         raise AdapterError("inbound profile cannot be empty")
+    if source_mode not in {"both", "gmail", "slack"}:
+        raise AdapterError("inbound source mode must be both, gmail, or slack")
+    if source_mode == "gmail" and discovery_script is None:
+        raise AdapterError("gmail source mode requires a discovery script")
+    if source_mode == "slack" and slack_discovery_script is None:
+        raise AdapterError("slack source mode requires a Slack discovery script")
     ledger = Path(ledger_script).expanduser().resolve()
     if not ledger.is_file():
         raise AdapterError(f"inbound ledger script not found: {ledger}")
     run = core.start_adapter_run(db, "inbound-leads")
     discovery: dict[str, Any] = {"gmail": {"enabled": False}, "slack": {"enabled": False}}
-    if discovery_script is not None:
+    if source_mode in {"both", "gmail"} and discovery_script is not None:
         script = Path(discovery_script).expanduser().resolve()
         if not script.is_file():
             core.finish_adapter_run(
@@ -158,33 +166,33 @@ def run_inbound_leads(
             ),
         }
 
-    try:
-        pending = runner(
-            [python, str(ledger), "pending", "--profile", profile, "--json"],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
-        raise AdapterError(f"inbound ledger read failed: {exc}") from exc
-    if pending.returncode != 0:
-        detail = (pending.stderr or pending.stdout)[-2000:]
-        core.finish_adapter_run(db, run["id"], state="failed", detail=detail)
-        raise AdapterError(f"inbound ledger exited {pending.returncode}: {detail}")
-    try:
-        import json
+    rows: list[dict[str, Any]] = []
+    if source_mode in {"both", "gmail"}:
+        try:
+            pending = runner(
+                [python, str(ledger), "pending", "--profile", profile, "--json"],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+            raise AdapterError(f"inbound ledger read failed: {exc}") from exc
+        if pending.returncode != 0:
+            detail = (pending.stderr or pending.stdout)[-2000:]
+            core.finish_adapter_run(db, run["id"], state="failed", detail=detail)
+            raise AdapterError(f"inbound ledger exited {pending.returncode}: {detail}")
+        try:
+            import json
 
-        rows = json.loads(pending.stdout)
-        # Validate the ledger before polling Slack. The Slack source advances its own cursor, so
-        # a malformed or unavailable ledger must fail before any mention can be consumed.
-        snapshot_from_pending(rows, profile=profile, space_id=space_id)
-    except Exception as exc:
-        core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
-        raise
+            rows = json.loads(pending.stdout)
+            snapshot_from_pending(rows, profile=profile, space_id=space_id)
+        except Exception as exc:
+            core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+            raise
 
     slack_lines: list[str] | None = None
-    if slack_discovery_script is not None:
+    if source_mode in {"both", "slack"} and slack_discovery_script is not None:
         slack_script = Path(slack_discovery_script).expanduser().resolve()
         if not slack_script.is_file():
             core.finish_adapter_run(

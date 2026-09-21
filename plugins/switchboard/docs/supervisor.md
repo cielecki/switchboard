@@ -6,7 +6,8 @@ the web UI only reads the resulting state.
 Each cycle:
 
 1. selects enabled adapter schedules whose `next_run_at` has arrived;
-2. runs each adapter independently and records completion or failure;
+2. starts each adapter in an independent worker and records completion or failure without blocking
+   delivery, alerts, or other schedules;
 3. advances each schedule by its configured interval;
 4. recovers expired processor leases and materializes missing bound deliveries;
 5. dispatches the oldest eligible wait or processor deliveries, up to the configured per-cycle
@@ -15,7 +16,8 @@ Each cycle:
    threshold, and one recovery alert when it resumes;
 7. writes a heartbeat, cycle time, and combined error summary.
 
-A failed source or delivery does not terminate the process. Failed chat deliveries stay pending and
+A failed or timed-out source cannot stop the coordinator; Switchboard kills the whole external
+process group so descendants cannot keep captured pipes open after the nominal timeout. Failed chat deliveries stay pending and
 retain their stable broker request ID. The retry interval prevents tight failure loops.
 The default `--delivery-batch 1` keeps source polling and the health heartbeat responsive even when
 the initial queue contains many chat wakes. Increase it only when the relay is known to return

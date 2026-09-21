@@ -172,6 +172,33 @@ class AdapterTest(unittest.TestCase):
         event = result["events"][0]["event"]
         self.assertEqual(event["event_type"], "inbound.slack.mention")
 
+    def test_slack_only_mode_does_not_read_gmail_ledger(self) -> None:
+        ledger_script = self.root / "ledger.py"
+        slack_script = self.root / "watch-slack.sh"
+        ledger_script.touch()
+        slack_script.touch()
+        calls: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="MENTION\t123.4\t120.0\tU123\tprivate text\n",
+                stderr="",
+            )
+
+        run_inbound_leads(
+            self.db,
+            ledger_script=ledger_script,
+            profile="nina",
+            slack_discovery_script=slack_script,
+            source_mode="slack",
+            runner=runner,
+        )
+
+        self.assertEqual(calls, [["bash", str(slack_script.resolve())]])
+
     def test_inbound_validates_ledger_before_advancing_slack_cursor(self) -> None:
         ledger_script = self.root / "ledger.py"
         slack_script = self.root / "watch-slack.sh"

@@ -76,6 +76,11 @@ stable message and thread pointers without copying the user ID or message text i
 These polls do not triage, create CRM records, send mail, or post to Slack. Existing source locks
 remain authoritative, and operators must preserve one publishing owner per mailbox.
 
+Use `--source-mode gmail` and `--source-mode slack` in separate persistent schedules. Slack-only
+mode does not read the Gmail ledger, and Gmail-only mode does not advance the Slack cursor. Every
+external command runs in its own process group; a timeout terminates descendants before the
+adapter reports failure.
+
 For a migration with an existing Slack cursor, run the first scheduled poll before creating or
 enabling the Slack route and binding. Review or close the historical baseline in Switchboard, then
 enable routing for subsequent mentions. Creating the route first can turn old cursor history into

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -8,7 +10,7 @@ from unittest.mock import patch
 
 from switchboard import core
 from switchboard.db import Database
-from switchboard.supervisor import run_cycle, run_once
+from switchboard.supervisor import ScheduleWorkers, run_cycle, run_once
 
 
 class SupervisorTest(unittest.TestCase):
@@ -144,6 +146,65 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(result["schedules"][0]["state"], "completed")
         self.assertEqual(calls[0]["profile"], "nina")
         self.assertEqual(calls[0]["slack_discovery_script"], str(slack_script.resolve()))
+
+    def test_schedule_workers_do_not_block_other_sources(self) -> None:
+        release = threading.Event()
+        core.upsert_ingest_schedule(
+            self.db,
+            "slow-ingest",
+            status_script=self.status_script,
+            every_seconds=60,
+        )
+        core.upsert_timer_schedule(
+            self.db,
+            "daily",
+            space_id="demo",
+            source_id="timer/daily",
+            event_type="maintenance.due",
+            every_seconds=86400,
+        )
+
+        def slow_ingest(_db, **_kwargs):
+            release.wait(3)
+            return {"run": {"id": "slow", "state": "completed"}}
+
+        workers = ScheduleWorkers(self.db, ingest_runner=slow_ingest)
+        self.addCleanup(lambda: (release.set(), workers.shutdown()))
+        launched = workers.poll()
+        self.assertEqual({item["id"] for item in launched}, {"slow-ingest", "daily"})
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if core.get_schedule(self.db, "daily")["last_state"] == "completed":
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("independent timer schedule was blocked by the slow source")
+        self.assertIsNone(core.get_schedule(self.db, "slow-ingest")["last_state"])
+
+    def test_timer_schedule_keeps_anchored_utc_cadence(self) -> None:
+        created = core.upsert_timer_schedule(
+            self.db,
+            "daily",
+            space_id="demo",
+            source_id="timer/daily",
+            event_type="maintenance.due",
+            every_seconds=86400,
+            first_run_at="2026-09-21T23:50:00+02:00",
+        )
+        self.assertEqual(created["next_run_at"], "2026-09-21T21:50:00+00:00")
+
+        finished_at = "2026-09-21T21:55:00+00:00"
+        with patch("switchboard.supervisor.core.now", return_value=finished_at):
+            run_cycle(
+                self.db,
+                relay=None,
+                cli_command=["switchboard"],
+                at=datetime.fromisoformat(created["next_run_at"]),
+            )
+
+        schedule = core.get_schedule(self.db, "daily")
+        self.assertEqual(schedule["next_run_at"], "2026-09-22T21:50:00+00:00")
 
     def test_once_records_a_clean_supervisor_stop(self) -> None:
         result = run_once(self.db, relay=None, cli_command=["switchboard"])

@@ -106,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     inbound.add_argument("--profile", required=True)
     inbound.add_argument("--discovery-script")
     inbound.add_argument("--slack-discovery-script")
+    inbound.add_argument("--source-mode", choices=["both", "gmail", "slack"], default="both")
     inbound.add_argument("--python", default=sys.executable)
     inbound.add_argument("--space", default="inbound-leads")
     inbound.add_argument("--timeout", type=int, default=240)
@@ -133,10 +134,22 @@ def build_parser() -> argparse.ArgumentParser:
     add_inbound.add_argument("--profile", required=True)
     add_inbound.add_argument("--discovery-script")
     add_inbound.add_argument("--slack-discovery-script")
+    add_inbound.add_argument("--source-mode", choices=["both", "gmail", "slack"], default="both")
     add_inbound.add_argument("--every", type=int, required=True, help="interval in seconds")
     add_inbound.add_argument("--space", default="inbound-leads")
     add_inbound.add_argument("--timeout", type=int, default=240)
     add_inbound.add_argument("--disabled", action="store_true")
+    add_timer = schedule.add_parser(
+        "add-timer", help="schedule a recurring deterministic timer event"
+    )
+    add_timer.add_argument("id")
+    add_timer.add_argument("--space", required=True)
+    add_timer.add_argument("--source", required=True)
+    add_timer.add_argument("--event-type", required=True)
+    add_timer.add_argument("--every", type=int, required=True, help="interval in seconds")
+    add_timer.add_argument("--first-run-at")
+    add_timer.add_argument("--attributes", type=json_object, default={})
+    add_timer.add_argument("--disabled", action="store_true")
     schedule.add_parser("list")
     enable = schedule.add_parser("enable")
     enable.add_argument("id")
@@ -190,6 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_processors.add_argument("--state")
     list_processors.add_argument("--processor")
     list_processors.add_argument("--event")
+    list_processors.add_argument("--space")
     for verb in ("show", "start", "retry"):
         processor_mutation = processor.add_parser(verb)
         processor_mutation.add_argument("id")
@@ -230,6 +244,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     processor_delivery_dispatch.add_argument("--activate-inactive", action="store_true")
     processor_delivery_dispatch.add_argument("--timeout", type=int, default=30)
+    alert_list = processor.add_parser("alert-list")
+    alert_list.add_argument("--state", choices=["open", "recovered"])
+    review_resolve = processor.add_parser("review-resolve")
+    review_resolve.add_argument("id")
+    review_resolve.add_argument("--resolution", choices=["complete", "retry"], required=True)
+    review_resolve.add_argument("--summary", default="")
+    review_resolve.add_argument("--decision", type=json_object, default={})
+    review_resolve.add_argument("--actions", type=json_array, default=[])
     for verb in ("complete", "fail", "needs-review"):
         finish_processor = processor.add_parser(verb)
         finish_processor.add_argument("id")
@@ -344,6 +366,7 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 profile=args.profile,
                 discovery_script=args.discovery_script,
                 slack_discovery_script=args.slack_discovery_script,
+                source_mode=args.source_mode,
                 python=args.python,
                 space_id=args.space,
                 timeout=args.timeout,
@@ -369,9 +392,22 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 profile=args.profile,
                 discovery_script=args.discovery_script,
                 slack_discovery_script=args.slack_discovery_script,
+                source_mode=args.source_mode,
                 every_seconds=args.every,
                 space_id=args.space,
                 timeout=args.timeout,
+                enabled=not args.disabled,
+            )
+        if args.verb == "add-timer":
+            return core.upsert_timer_schedule(
+                db,
+                args.id,
+                space_id=args.space,
+                source_id=args.source,
+                event_type=args.event_type,
+                every_seconds=args.every,
+                first_run_at=args.first_run_at,
+                attributes=args.attributes,
                 enabled=not args.disabled,
             )
         if args.verb == "enable":
@@ -486,6 +522,17 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 activate_inactive=args.activate_inactive,
                 timeout=args.timeout,
             )
+        if args.verb == "alert-list":
+            return core.list_processor_alerts(db, args.state)
+        if args.verb == "review-resolve":
+            return core.resolve_processor_review(
+                db,
+                args.id,
+                resolution=args.resolution,
+                summary=args.summary,
+                decision=args.decision,
+                actions=args.actions,
+            )
         if args.verb in {"complete", "fail", "needs-review"}:
             state = {"complete": "completed", "fail": "failed"}.get(args.verb, args.verb)
             return core.finish_processor_run(
@@ -500,7 +547,11 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 worker=args.worker,
             )
         return core.list_processor_runs(
-            db, state=args.state, processor=args.processor, event_id=args.event
+            db,
+            state=args.state,
+            processor=args.processor,
+            event_id=args.event,
+            space_id=args.space,
         )
     if args.command == "event":
         if args.verb == "emit":

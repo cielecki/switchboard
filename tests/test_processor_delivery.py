@@ -115,6 +115,54 @@ class ProcessorDeliveryTest(unittest.TestCase):
         self.assertEqual(completed["attempts"][-1]["state"], "completed")
         self.assertEqual(completed["delivery"]["state"], "acknowledged")
 
+    def test_review_resolution_records_decision_and_can_resume(self) -> None:
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        run_id = self.emit()
+        core.claim_processor_run(self.db, run_id, worker="chat:claude:session-1")
+        core.finish_processor_run(
+            self.db,
+            run_id,
+            state="needs-review",
+            worker="chat:claude:session-1",
+            summary="Pick destination",
+            decision={"outcome": "needs-review"},
+        )
+
+        resumed = core.resolve_processor_review(
+            self.db,
+            run_id,
+            resolution="retry",
+            decision={"choice": "sales"},
+            actions=[{"kind": "human-decision", "state": "recorded"}],
+        )
+
+        self.assertEqual(resumed["state"], "pending")
+        self.assertEqual(resumed["decision"]["review"]["choice"], "sales")
+        self.assertEqual(resumed["delivery"]["state"], "pending")
+        self.assertEqual(resumed["delivery"]["generation"], 1)
+        core.claim_processor_run(self.db, run_id, worker="chat:claude:session-1")
+        completed = core.finish_processor_run(
+            self.db,
+            run_id,
+            state="completed",
+            worker="chat:claude:session-1",
+            decision={"outcome": "filed"},
+        )
+        self.assertEqual(completed["decision"]["review"]["choice"], "sales")
+
+    def test_processor_list_can_filter_and_report_space(self) -> None:
+        run_id = self.emit()
+        rows = core.list_processor_runs(self.db, space_id="demo")
+
+        self.assertEqual([row["id"] for row in rows], [run_id])
+        self.assertEqual(rows[0]["space_id"], "demo")
+        self.assertEqual(core.list_processor_runs(self.db, space_id="other"), [])
+
     def test_dispatch_uses_generation_stable_request_id_and_activation(self) -> None:
         core.bind_processor(
             self.db,

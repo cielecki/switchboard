@@ -4,18 +4,19 @@ import fcntl
 import json
 import os
 import signal
-import subprocess
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from queue import Empty, SimpleQueue
 from typing import Any, TextIO
 
 from . import core
-from .adapters import run_inbound_leads, run_ingest_shadow
+from .adapters import run_inbound_leads, run_ingest_shadow, run_timer
 from .db import Database
+from .process import run_bounded, terminate_active_process_groups
 from .web import handler_for
 
 
@@ -78,7 +79,7 @@ def _processor_delivery_issue(
 
 
 def _run_alert_command(command: list[str], payload: dict[str, Any]) -> dict[str, Any]:
-    result = subprocess.run(
+    result = run_bounded(
         command,
         input=json.dumps(payload, ensure_ascii=False),
         capture_output=True,
@@ -92,6 +93,140 @@ def _run_alert_command(command: list[str], payload: dict[str, Any]) -> dict[str,
             + (result.stderr or result.stdout)[-2000:]
         )
     return {"stdout": result.stdout[-2000:]}
+
+
+def _execute_schedule(
+    db: Database,
+    schedule: dict[str, Any],
+    *,
+    ingest_runner: Callable[..., dict[str, Any]] = run_ingest_shadow,
+    inbound_runner: Callable[..., dict[str, Any]] = run_inbound_leads,
+    timer_runner: Callable[..., dict[str, Any]] = run_timer,
+    started_at: str | None = None,
+) -> dict[str, Any]:
+    core.mark_schedule_started(db, schedule["id"], started_at or core.now())
+    try:
+        config = schedule["config"]
+        if schedule["adapter"] == "ingest-shadow":
+            result = ingest_runner(
+                db,
+                status_script=config["status_script"],
+                discovery_script=config.get("discovery_script"),
+                space_id=config["space_id"],
+                timeout=config["timeout"],
+            )
+        elif schedule["adapter"] == "inbound-leads":
+            result = inbound_runner(
+                db,
+                ledger_script=config["ledger_script"],
+                profile=config["profile"],
+                space_id=config["space_id"],
+                discovery_script=config.get("discovery_script"),
+                slack_discovery_script=config.get("slack_discovery_script"),
+                source_mode=config.get("source_mode", "both"),
+                timeout=config["timeout"],
+            )
+        elif schedule["adapter"] == "timer":
+            result = timer_runner(
+                db,
+                space_id=config["space_id"],
+                source_id=config["source_id"],
+                event_type=config["event_type"],
+                scheduled_for=schedule["next_run_at"],
+                attributes=config.get("attributes") or {},
+            )
+        else:
+            raise ValueError(f"unsupported scheduled adapter: {schedule['adapter']}")
+        terminal = core.mark_schedule_finished(
+            db, schedule["id"], state="completed", finished_at=core.now()
+        )
+        return {
+            "id": schedule["id"],
+            "state": "completed",
+            "run": result["run"],
+            "schedule": terminal,
+        }
+    except Exception as exc:  # noqa: BLE001 - one source must not stop the coordinator
+        detail = str(exc)
+        terminal = core.mark_schedule_finished(
+            db,
+            schedule["id"],
+            state="failed",
+            error=detail,
+            finished_at=core.now(),
+        )
+        return {
+            "id": schedule["id"],
+            "state": "failed",
+            "error": detail,
+            "schedule": terminal,
+        }
+
+
+class ScheduleWorkers:
+    """Run persistent schedules independently from the coordinator's delivery loop."""
+
+    def __init__(
+        self,
+        db: Database,
+        *,
+        ingest_runner: Callable[..., dict[str, Any]] = run_ingest_shadow,
+        inbound_runner: Callable[..., dict[str, Any]] = run_inbound_leads,
+        timer_runner: Callable[..., dict[str, Any]] = run_timer,
+    ) -> None:
+        self.db = db
+        self.ingest_runner = ingest_runner
+        self.inbound_runner = inbound_runner
+        self.timer_runner = timer_runner
+        self._active: dict[str, threading.Thread] = {}
+        self._active_lock = threading.Lock()
+        self._results: SimpleQueue[dict[str, Any]] = SimpleQueue()
+
+    def _run(self, schedule: dict[str, Any], started_at: str) -> None:
+        try:
+            self._results.put(
+                _execute_schedule(
+                    self.db,
+                    schedule,
+                    ingest_runner=self.ingest_runner,
+                    inbound_runner=self.inbound_runner,
+                    timer_runner=self.timer_runner,
+                    started_at=started_at,
+                )
+            )
+        finally:
+            with self._active_lock:
+                self._active.pop(schedule["id"], None)
+
+    def poll(self, at: str | None = None) -> list[dict[str, Any]]:
+        timestamp = at or core.now()
+        results: list[dict[str, Any]] = []
+        while True:
+            try:
+                results.append(self._results.get_nowait())
+            except Empty:
+                break
+        for schedule in core.due_schedules(self.db, timestamp):
+            thread = threading.Thread(
+                target=self._run,
+                args=(schedule, timestamp),
+                name=f"switchboard-schedule-{schedule['id']}",
+                daemon=True,
+            )
+            with self._active_lock:
+                if schedule["id"] in self._active:
+                    continue
+                self._active[schedule["id"]] = thread
+            thread.start()
+            results.append({"id": schedule["id"], "state": "running"})
+        return results
+
+    def shutdown(self) -> None:
+        terminate_active_process_groups()
+        with self._active_lock:
+            active = list(self._active.values())
+        for thread in active:
+            thread.join(timeout=5)
 
 
 def process_processor_alerts(
@@ -204,11 +339,13 @@ def run_cycle(
     at: datetime | None = None,
     ingest_runner: Callable[..., dict[str, Any]] = run_ingest_shadow,
     inbound_runner: Callable[..., dict[str, Any]] = run_inbound_leads,
+    timer_runner: Callable[..., dict[str, Any]] = run_timer,
     delivery_runner: Callable[..., dict[str, Any]] = core.dispatch_delivery,
     processor_delivery_runner: Callable[..., dict[str, Any]] = core.dispatch_processor_delivery,
     alert_command: list[str] | None = None,
     alert_after_seconds: int = 900,
     alert_runner: Callable[[list[str], dict[str, Any]], dict[str, Any]] = _run_alert_command,
+    process_schedules: bool = True,
 ) -> dict[str, Any]:
     if delivery_batch_size < 1:
         raise ValueError("delivery batch size must be at least one")
@@ -222,48 +359,19 @@ def run_cycle(
 
     core.recover_expired_processor_attempts(db, cycle_timestamp)
 
-    for schedule in core.due_schedules(db, cycle_timestamp):
-        core.mark_schedule_started(db, schedule["id"], cycle_timestamp)
-        try:
-            if schedule["adapter"] == "ingest-shadow":
-                config = schedule["config"]
-                result = ingest_runner(
-                    db,
-                    status_script=config["status_script"],
-                    discovery_script=config.get("discovery_script"),
-                    space_id=config["space_id"],
-                    timeout=config["timeout"],
-                )
-            elif schedule["adapter"] == "inbound-leads":
-                config = schedule["config"]
-                result = inbound_runner(
-                    db,
-                    ledger_script=config["ledger_script"],
-                    profile=config["profile"],
-                    space_id=config["space_id"],
-                    discovery_script=config.get("discovery_script"),
-                    slack_discovery_script=config.get("slack_discovery_script"),
-                    timeout=config["timeout"],
-                )
-            else:
-                raise ValueError(f"unsupported scheduled adapter: {schedule['adapter']}")
-            terminal = core.mark_schedule_finished(
-                db, schedule["id"], state="completed", finished_at=core.now()
-            )
-            schedule_results.append(
-                {"id": schedule["id"], "state": "completed", "run": result["run"], "schedule": terminal}
-            )
-        except Exception as exc:  # noqa: BLE001 - isolate one source from the daemon
-            detail = str(exc)
-            terminal = core.mark_schedule_finished(
+    if process_schedules:
+        for schedule in core.due_schedules(db, cycle_timestamp):
+            result = _execute_schedule(
                 db,
-                schedule["id"],
-                state="failed",
-                error=detail,
-                finished_at=core.now(),
+                schedule,
+                ingest_runner=ingest_runner,
+                inbound_runner=inbound_runner,
+                timer_runner=timer_runner,
+                started_at=cycle_timestamp,
             )
-            schedule_results.append({"id": schedule["id"], "state": "failed", "error": detail, "schedule": terminal})
-            errors.append(f"schedule {schedule['id']}: {detail}")
+            schedule_results.append(result)
+            if result["state"] == "failed":
+                errors.append(f"schedule {schedule['id']}: {result['error']}")
 
     core.sync_processor_deliveries(db)
     if relay is not None:
@@ -429,8 +537,10 @@ def run_forever(
         print(f"Switchboard supervisor: {web_url}", flush=True)
         last_cycle_at: str | None = None
         last_error: str | None = None
+        schedule_workers = ScheduleWorkers(db)
         try:
             while not stop.is_set():
+                schedule_results = schedule_workers.poll()
                 result = run_cycle(
                     db,
                     relay=relay,
@@ -441,6 +551,13 @@ def run_forever(
                     delivery_batch_size=delivery_batch_size,
                     alert_command=alert_command,
                     alert_after_seconds=alert_after_seconds,
+                    process_schedules=False,
+                )
+                result["schedules"] = schedule_results
+                result["errors"].extend(
+                    f"schedule {item['id']}: {item['error']}"
+                    for item in schedule_results
+                    if item["state"] == "failed"
                 )
                 last_cycle_at = result["at"]
                 last_error = "; ".join(result["errors"]) or None
@@ -469,6 +586,7 @@ def run_forever(
             )
             raise
         finally:
+            schedule_workers.shutdown()
             server.shutdown()
             server.server_close()
             web_thread.join(timeout=5)

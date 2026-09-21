@@ -6,6 +6,7 @@ from typing import Any
 
 from .. import core
 from ..db import Database
+from ..process import run_bounded
 
 
 class AdapterError(ValueError):
@@ -116,7 +117,7 @@ def run_command_adapter(
     *,
     adapter_name: str = "external",
     timeout: int = 120,
-    runner: Any = subprocess.run,
+    runner: Any = run_bounded,
 ) -> dict[str, Any]:
     if not command or not all(isinstance(part, str) and part for part in command):
         raise AdapterError("adapter command must be a non-empty JSON array of strings")

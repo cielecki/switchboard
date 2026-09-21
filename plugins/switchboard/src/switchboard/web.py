@@ -33,7 +33,7 @@ HTML = """<!doctype html>
   <header><div><h1>Switchboard</h1><div class="muted">Read-only operations view</div></div><div id="db" class="muted"></div></header>
   <div id="counts" class="grid"></div>
   <section><h2>Supervisor</h2><div id="supervisor"></div></section>
-  <section><h2>Spaces</h2><div id="spaces"></div></section>
+  <section><h2>Spaces</h2><div id="space-nav"></div><div id="spaces"></div></section>
   <section><h2>Sources</h2><div id="sources"></div></section>
   <section><h2>Schedules</h2><div id="schedules"></div></section>
   <section><h2>Open deliveries</h2><div id="deliveries"></div></section>
@@ -59,20 +59,23 @@ function richTable(rows, cols, wrap=[]) {
 async function load() {
   const [status, spaces, sources, schedules, deliveries, bindings, processorDeliveries, processorAlerts, processors, routes, waits, adapters, events] = await Promise.all(['/api/status','/api/spaces','/api/sources','/api/schedules','/api/deliveries','/api/processor-bindings','/api/processor-deliveries','/api/processor-alerts','/api/processors','/api/routes','/api/waits','/api/adapters','/api/events'].map(u=>fetch(u).then(r=>r.json())));
   document.querySelector('#db').textContent = status.database;
+  const selectedSpace = new URLSearchParams(location.search).get('space');
+  const scoped = rows => selectedSpace ? rows.filter(row => row.space_id === selectedSpace || row.config?.space_id === selectedSpace) : rows;
+  document.querySelector('#space-nav').innerHTML = ['<a href="/">All spaces</a>', ...spaces.map(space => `<a href="/?space=${encodeURIComponent(space.id)}">${esc(space.name)}</a>`)].join(' &middot; ');
   document.querySelector('#counts').innerHTML = Object.entries(status.counts).map(([k,v])=>`<div class="card"><div class="muted">${esc(k.replaceAll('_',' '))}</div><div class="value">${v}</div></div>`).join('');
   document.querySelector('#supervisor').innerHTML = status.supervisor ? table([status.supervisor], ['state','pid','heartbeat_at','last_cycle_at','dispatch_enabled','web_url','last_error']) : '<p class="muted">Never started</p>';
   document.querySelector('#spaces').innerHTML = table(spaces, ['id','name','created_at']);
-  document.querySelector('#sources').innerHTML = richTable(sources, ['id','space_id','kind','state','config','created_at'], ['config']);
-  document.querySelector('#schedules').innerHTML = table(schedules, ['id','adapter','enabled','every_seconds','next_run_at','last_state','last_error']);
+  document.querySelector('#sources').innerHTML = richTable(scoped(sources), ['id','space_id','kind','state','config','created_at'], ['config']);
+  document.querySelector('#schedules').innerHTML = table(scoped(schedules), ['id','adapter','enabled','every_seconds','next_run_at','last_state','last_error']);
   document.querySelector('#deliveries').innerHTML = table(deliveries.filter(x=>['pending','accepted'].includes(x.state)), ['id','state','consumer','event_id','created_at']);
-  document.querySelector('#bindings').innerHTML = table(bindings, ['state','space_id','processor','consumer','lease_seconds','activate_inactive','updated_at']);
-  document.querySelector('#processor-deliveries').innerHTML = table(processorDeliveries.filter(x=>['pending','accepted'].includes(x.state)), ['id','state','processor','consumer','processor_run_id','generation','created_at','last_error']);
-  document.querySelector('#processor-alerts').innerHTML = table(processorAlerts, ['state','delivery_id','generation','detail','opened_at','recovered_at']);
-  document.querySelector('#processors').innerHTML = richTable(processors, ['id','state','processor','summary','facts','decision','actions','updated_at'], ['summary','facts','decision','actions']);
-  document.querySelector('#routes').innerHTML = richTable(routes, ['priority','state','name','space_id','predicate','target'], ['predicate','target']);
+  document.querySelector('#bindings').innerHTML = table(scoped(bindings), ['state','space_id','processor','consumer','lease_seconds','activate_inactive','updated_at']);
+  document.querySelector('#processor-deliveries').innerHTML = table(scoped(processorDeliveries).filter(x=>['pending','accepted'].includes(x.state)), ['id','state','space_id','processor','consumer','processor_run_id','generation','created_at','last_error']);
+  document.querySelector('#processor-alerts').innerHTML = table(processorAlerts.filter(x=>x.state==='open'), ['state','delivery_id','generation','detail','opened_at']);
+  document.querySelector('#processors').innerHTML = richTable(scoped(processors), ['id','space_id','state','processor','summary','facts','decision','actions','updated_at'], ['summary','facts','decision','actions']);
+  document.querySelector('#routes').innerHTML = richTable(scoped(routes), ['priority','state','name','space_id','predicate','target'], ['predicate','target']);
   document.querySelector('#waits').innerHTML = table(waits.filter(x=>x.state==='active'), ['id','consumer','purpose','predicate','created_at']);
   document.querySelector('#adapters').innerHTML = table(adapters, ['id','adapter','state','discovered_sources','emitted_events','deduplicated_events','started_at']);
-  document.querySelector('#events').innerHTML = table(events, ['id','source_id','event_type','external_id','observed_at']);
+  document.querySelector('#events').innerHTML = table(scoped(events), ['id','space_id','source_id','event_type','external_id','observed_at']);
 }
 load(); setInterval(load, 5000);
 </script></body></html>"""

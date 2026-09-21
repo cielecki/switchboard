@@ -27,6 +27,8 @@ The first vertical slice provides:
 - durable processor-to-chat bindings, delivery history, and expiring work leases;
 - deduplicated unreachable and recovery alerts through a configurable local command;
 - a dedicated inbound-leads adapter that stores pointers and state, never message bodies.
+- independently executing schedules with descendant-safe timeouts;
+- deterministic timer events, human-review resolution, and space-filtered queue views.
 
 Existing capture and lead-processing systems can integrate as adapters before any migration or
 replacement. Domain processors remain responsible for their own policy and external writes.
@@ -114,6 +116,16 @@ Only one worker can hold a run's expiring lease; `processor heartbeat` renews it
 leases, alerts, queue state, concise summary, facts, decision, actions, and errors. CLI commands
 remain the only mutation interface.
 
+Human review is an explicit transition rather than an orphaned terminal state:
+
+```bash
+switchboard --json processor review-resolve <processor-run-id> \
+  --resolution retry --decision '{"choice":"approved destination"}'
+```
+
+Use `--resolution complete` when the decision itself closes the work. `processor list --space
+<space-id>` and the dashboard's space links keep independent queues separate.
+
 Observe the inbound-leads ledger without duplicating message content:
 
 ```bash
@@ -128,6 +140,10 @@ triages or publishes a lead.
 Add `--slack-discovery-script /absolute/path/to/watch_inbound_slack.sh` to perform one bounded
 mention poll in the same schedule. Switchboard stores only stable message/thread pointers and
 coarse state; message text remains in Slack.
+
+For production, configure Gmail and Slack as separate schedules with `--source-mode gmail` and
+`--source-mode slack`. They execute independently, so a slow Gmail call does not delay Slack,
+ingest, chat deliveries, alerts, or the supervisor heartbeat.
 
 When migrating an existing Slack watcher, create the schedule before its route or binding and let
 one poll complete. Inspect or close any historical pointers imported from the old cursor, then
@@ -145,12 +161,21 @@ switchboard --json schedule add-ingest-shadow ingest \
 switchboard --json supervisor once --relay /absolute/path/to/chats/send-message.py
 ```
 
-The long-running supervisor executes due schedules, retries failed deliveries with bounded cadence,
-limits chat delivery work per cycle so a backlog cannot starve source polling or heartbeats,
-records its heartbeat and errors, and serves the web UI:
+The long-running supervisor executes due schedules independently, retries failed deliveries with
+bounded cadence, terminates a timed-out command's complete descendant process group, limits chat
+delivery work per cycle, records its heartbeat and errors, and serves the web UI:
 
 ```bash
 switchboard supervisor run --relay /absolute/path/to/chats/send-message.py --delivery-batch 1
+```
+
+Create a recurring deterministic maintenance wake without embedding policy in Switchboard:
+
+```bash
+switchboard --json schedule add-timer nina-daily \
+  --space nina-inbound --source timer/nina-daily \
+  --event-type inbound.maintenance.due --every 86400 \
+  --first-run-at 2026-09-21T23:50:00+02:00
 ```
 
 On macOS, install it as a persistent per-user launch agent entirely through the CLI:
