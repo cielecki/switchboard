@@ -125,13 +125,18 @@ Add `--discovery-script /absolute/path/to/watch_inbound_gmail.sh` to perform one
 Gmail discovery poll before reading the ledger. The supervisor forces `MAX_POLLS=1`; it never
 triages or publishes a lead.
 
+Add `--slack-discovery-script /absolute/path/to/watch_inbound_slack.sh` to perform one bounded
+mention poll in the same schedule. Switchboard stores only stable message/thread pointers and
+coarse state; message text remains in Slack.
+
 ## Persistent supervisor
 
 Create a recurring ingest observation schedule, then run one cycle:
 
 ```bash
 switchboard --json schedule add-ingest-shadow ingest \
-  --status-script /absolute/path/to/ingest/status.py --every 60
+  --status-script /absolute/path/to/ingest/status.py \
+  --discovery-script /absolute/path/to/ingest/watch.py --every 300 --timeout 900
 switchboard --json supervisor once --relay /absolute/path/to/chats/send-message.py
 ```
 

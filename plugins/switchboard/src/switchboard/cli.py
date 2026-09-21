@@ -91,8 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--name", required=True)
     run.add_argument("--command-json", required=True, type=json_string_array)
     run.add_argument("--timeout", type=int, default=120)
-    ingest = adapter.add_parser("ingest-shadow", help="observe ingest through status.py")
+    ingest = adapter.add_parser(
+        "ingest-shadow", help="run optional bounded discovery and observe ingest through status.py"
+    )
     ingest.add_argument("--status-script", required=True)
+    ingest.add_argument("--discovery-script")
     ingest.add_argument("--python", default=sys.executable)
     ingest.add_argument("--space", default="personal-ingest")
     ingest.add_argument("--timeout", type=int, default=120)
@@ -102,6 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     inbound.add_argument("--ledger-script", required=True)
     inbound.add_argument("--profile", required=True)
     inbound.add_argument("--discovery-script")
+    inbound.add_argument("--slack-discovery-script")
     inbound.add_argument("--python", default=sys.executable)
     inbound.add_argument("--space", default="inbound-leads")
     inbound.add_argument("--timeout", type=int, default=240)
@@ -112,10 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
         "schedule", help="manage persistent adapter schedules"
     ).add_subparsers(dest="verb", required=True)
     add_ingest = schedule.add_parser(
-        "add-ingest-shadow", help="schedule the read-only ingest adapter"
+        "add-ingest-shadow", help="schedule bounded ingest discovery and store observation"
     )
     add_ingest.add_argument("id")
     add_ingest.add_argument("--status-script", required=True)
+    add_ingest.add_argument("--discovery-script")
     add_ingest.add_argument("--every", type=int, required=True, help="interval in seconds")
     add_ingest.add_argument("--space", default="personal-ingest")
     add_ingest.add_argument("--timeout", type=int, default=120)
@@ -127,6 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_inbound.add_argument("--ledger-script", required=True)
     add_inbound.add_argument("--profile", required=True)
     add_inbound.add_argument("--discovery-script")
+    add_inbound.add_argument("--slack-discovery-script")
     add_inbound.add_argument("--every", type=int, required=True, help="interval in seconds")
     add_inbound.add_argument("--space", default="inbound-leads")
     add_inbound.add_argument("--timeout", type=int, default=240)
@@ -326,6 +332,7 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
             return run_ingest_shadow(
                 db,
                 status_script=args.status_script,
+                discovery_script=args.discovery_script,
                 python=args.python,
                 space_id=args.space,
                 timeout=args.timeout,
@@ -336,6 +343,7 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 ledger_script=args.ledger_script,
                 profile=args.profile,
                 discovery_script=args.discovery_script,
+                slack_discovery_script=args.slack_discovery_script,
                 python=args.python,
                 space_id=args.space,
                 timeout=args.timeout,
@@ -347,6 +355,7 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 db,
                 args.id,
                 status_script=args.status_script,
+                discovery_script=args.discovery_script,
                 every_seconds=args.every,
                 space_id=args.space,
                 timeout=args.timeout,
@@ -359,6 +368,7 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 ledger_script=args.ledger_script,
                 profile=args.profile,
                 discovery_script=args.discovery_script,
+                slack_discovery_script=args.slack_discovery_script,
                 every_seconds=args.every,
                 space_id=args.space,
                 timeout=args.timeout,

@@ -196,6 +196,7 @@ def upsert_ingest_schedule(
     schedule_id: str,
     *,
     status_script: str | Path,
+    discovery_script: str | Path | None = None,
     every_seconds: int,
     space_id: str = "personal-ingest",
     timeout: int = 120,
@@ -210,10 +211,16 @@ def upsert_ingest_schedule(
     script = Path(status_script).expanduser().resolve()
     if not script.is_file():
         raise ValueError(f"ingest status script not found: {script}")
+    discovery = None
+    if discovery_script:
+        discovery = Path(discovery_script).expanduser().resolve()
+        if not discovery.is_file():
+            raise ValueError(f"ingest discovery script not found: {discovery}")
     db.initialize()
     timestamp = now()
     config = {
         "status_script": str(script),
+        "discovery_script": str(discovery) if discovery else None,
         "space_id": space_id,
         "timeout": timeout,
     }
@@ -247,6 +254,7 @@ def upsert_ingest_schedule(
                 "enabled": enabled,
                 "space_id": space_id,
                 "timeout": timeout,
+                "discovery_enabled": discovery is not None,
             },
         )
     return get_schedule(db, schedule_id)
@@ -261,6 +269,7 @@ def upsert_inbound_schedule(
     every_seconds: int,
     space_id: str = "inbound-leads",
     discovery_script: str | Path | None = None,
+    slack_discovery_script: str | Path | None = None,
     timeout: int = 240,
     enabled: bool = True,
 ) -> dict[str, Any]:
@@ -280,6 +289,11 @@ def upsert_inbound_schedule(
         discovery = Path(discovery_script).expanduser().resolve()
         if not discovery.is_file():
             raise ValueError(f"inbound discovery script not found: {discovery}")
+    slack_discovery = None
+    if slack_discovery_script:
+        slack_discovery = Path(slack_discovery_script).expanduser().resolve()
+        if not slack_discovery.is_file():
+            raise ValueError(f"inbound Slack discovery script not found: {slack_discovery}")
     db.initialize()
     timestamp = now()
     config = {
@@ -288,6 +302,7 @@ def upsert_inbound_schedule(
         "space_id": space_id,
         "timeout": timeout,
         "discovery_script": str(discovery) if discovery else None,
+        "slack_discovery_script": str(slack_discovery) if slack_discovery else None,
     }
     with db.transaction() as connection:
         connection.execute(
@@ -320,6 +335,7 @@ def upsert_inbound_schedule(
                 "enabled": enabled,
                 "space_id": space_id,
                 "discovery_enabled": discovery is not None,
+                "slack_discovery_enabled": slack_discovery is not None,
                 "timeout": timeout,
             },
         )

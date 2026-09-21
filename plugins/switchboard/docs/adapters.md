@@ -50,11 +50,12 @@ The process must exit zero and print exactly one object:
   idempotent.
 - Adapters are invoked as argv arrays, never through a shell.
 
-## Ingest shadow adapter
+## Ingest adapter
 
 The built-in ingest adapter invokes the owning ingest system's supported
-`status.py --all --json` command. It never reads `_index.json`, walks the private store, calls sync,
-claims records, or changes routing status.
+`status.py --all --json` command. When configured with the owning `watch.py` discovery script, it
+first runs exactly one bounded poll with `MAX_POLLS=1`, then reads the resulting store. It never
+reads `_index.json`, walks the private store, claims records, or changes routing status.
 
 It creates one Switchboard source per observed ingest source and emits immutable
 `ingest.capture.observed` events. The external ID includes a digest of the normalized status row, so
@@ -70,6 +71,7 @@ command. It imports stable lead pointers and coarse pipeline state only. Sender,
 notes, and research do not cross this boundary.
 
 When configured with the owning workflow's Gmail discovery script, it first runs exactly one
-bounded poll with `MAX_POLLS=1`, then reads the ledger. That poll may discover pointers in the
-owning ledger; it does not triage, create CRM records, send mail, or post to Slack. Existing source
-locks remain authoritative, and operators must preserve one publishing owner per mailbox.
+bounded poll with `MAX_POLLS=1`, then reads the ledger. An optional bounded Slack mention poll adds
+stable message and thread pointers without copying the user ID or message text into Switchboard.
+These polls do not triage, create CRM records, send mail, or post to Slack. Existing source locks
+remain authoritative, and operators must preserve one publishing owner per mailbox.

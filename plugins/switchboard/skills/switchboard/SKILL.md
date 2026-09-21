@@ -76,15 +76,18 @@ consumer. Dispatch a pending chat delivery only through the configured `chats` r
 its stable request ID. Broker acceptance is not completion; acknowledge only after the relevant
 handling is complete.
 
-To observe an existing ingest store, call `adapter ingest-shadow --status-script <absolute path>`.
-This is deliberately read-only: it invokes ingest's supported status command and must not inspect
-or edit the store directly. Read [the adapter contract](../../docs/adapters.md) before integrating
-another source.
+To coordinate an existing ingest store, configure `adapter ingest-shadow` or its schedule with
+`--status-script <absolute path>` and the owning `watch.py` as `--discovery-script`. Switchboard
+runs one bounded gather poll, then invokes ingest's supported status command; it must not inspect
+or edit the store directly. Omit discovery only for an explicit shadow/read-only deployment. Read
+[the adapter contract](../../docs/adapters.md) before integrating another source.
 
 For inbound leads, use `adapter inbound-leads` with the owning ledger script and profile. The
 optional discovery script runs one canonical bounded Gmail poll. Switchboard stores pointers and
 coarse state only; never copy message bodies, sender details, or private research into its events.
 Lead verdicts, CRM writes, mail, and Slack publication remain owned by the inbound-leads workflow.
+An optional `--slack-discovery-script` runs one bounded mention poll and stores only message/thread
+pointers; route those events separately from lead pointers even when they share the same chat.
 
 Manage recurring adapters only through `schedule` commands. `supervisor once` is appropriate for a
 verified manual cycle; `service install` manages the persistent macOS launch agent. Do not edit the

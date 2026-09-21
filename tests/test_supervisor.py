@@ -21,10 +21,13 @@ class SupervisorTest(unittest.TestCase):
         self.status_script.touch()
 
     def test_due_schedule_runs_once_and_advances(self) -> None:
+        discovery_script = self.root / "watch.py"
+        discovery_script.touch()
         created = core.upsert_ingest_schedule(
             self.db,
             "ingest",
             status_script=self.status_script,
+            discovery_script=discovery_script,
             every_seconds=60,
         )
         calls: list[dict] = []
@@ -50,6 +53,7 @@ class SupervisorTest(unittest.TestCase):
         )
 
         self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["discovery_script"], str(discovery_script.resolve()))
         self.assertEqual(first["schedules"][0]["state"], "completed")
         self.assertEqual(second["schedules"], [])
         schedule = core.get_schedule(self.db, "ingest")
@@ -111,7 +115,9 @@ class SupervisorTest(unittest.TestCase):
 
     def test_due_inbound_schedule_uses_dedicated_runner(self) -> None:
         ledger_script = self.root / "ledger.py"
+        slack_script = self.root / "watch-slack.sh"
         ledger_script.touch()
+        slack_script.touch()
         created = core.upsert_inbound_schedule(
             self.db,
             "nina-inbound",
@@ -119,6 +125,7 @@ class SupervisorTest(unittest.TestCase):
             profile="nina",
             every_seconds=120,
             space_id="nina-inbound",
+            slack_discovery_script=slack_script,
         )
         calls: list[dict] = []
 
@@ -136,6 +143,7 @@ class SupervisorTest(unittest.TestCase):
 
         self.assertEqual(result["schedules"][0]["state"], "completed")
         self.assertEqual(calls[0]["profile"], "nina")
+        self.assertEqual(calls[0]["slack_discovery_script"], str(slack_script.resolve()))
 
     def test_once_records_a_clean_supervisor_stop(self) -> None:
         result = run_once(self.db, relay=None, cli_command=["switchboard"])

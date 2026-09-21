@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -75,6 +76,7 @@ def run_ingest_shadow(
     db: Database,
     *,
     status_script: str | Path,
+    discovery_script: str | Path | None = None,
     python: str = sys.executable,
     space_id: str = "personal-ingest",
     timeout: int = 120,
@@ -84,6 +86,40 @@ def run_ingest_shadow(
     if not script.is_file():
         raise AdapterError(f"ingest status script not found: {script}")
     run = core.start_adapter_run(db, "ingest-shadow")
+    discovery: dict[str, Any] | None = None
+    if discovery_script is not None:
+        discovery_path = Path(discovery_script).expanduser().resolve()
+        if not discovery_path.is_file():
+            core.finish_adapter_run(
+                db,
+                run["id"],
+                state="failed",
+                detail=f"discovery script not found: {discovery_path}",
+            )
+            raise AdapterError(f"ingest discovery script not found: {discovery_path}")
+        environment = dict(os.environ)
+        environment.update({"MAX_POLLS": "1", "INTERVAL": "0", "STOP_AT": ""})
+        try:
+            discovered = runner(
+                [python, str(discovery_path), "--monitor-events"],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=environment,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+            raise AdapterError(f"ingest discovery failed: {exc}") from exc
+        if discovered.returncode != 0:
+            detail = (discovered.stderr or discovered.stdout)[-2000:]
+            core.finish_adapter_run(db, run["id"], state="failed", detail=detail)
+            raise AdapterError(f"ingest discovery exited {discovered.returncode}: {detail}")
+        discovery = {
+            "enabled": True,
+            "event_lines": sum(
+                line.startswith("INGEST\t") for line in discovered.stdout.splitlines()
+            ),
+        }
     command = [python, str(script), "--all", "--json"]
     try:
         result = runner(command, capture_output=True, text=True, timeout=timeout)
@@ -106,4 +142,6 @@ def run_ingest_shadow(
     except Exception as exc:
         core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
         raise
-    return apply_snapshot(db, snapshot, run_id=run["id"])
+    result = apply_snapshot(db, snapshot, run_id=run["id"])
+    result["discovery"] = discovery or {"enabled": False}
+    return result

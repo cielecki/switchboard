@@ -230,6 +230,7 @@ def run_cycle(
                 result = ingest_runner(
                     db,
                     status_script=config["status_script"],
+                    discovery_script=config.get("discovery_script"),
                     space_id=config["space_id"],
                     timeout=config["timeout"],
                 )
@@ -241,6 +242,7 @@ def run_cycle(
                     profile=config["profile"],
                     space_id=config["space_id"],
                     discovery_script=config.get("discovery_script"),
+                    slack_discovery_script=config.get("slack_discovery_script"),
                     timeout=config["timeout"],
                 )
             else:
