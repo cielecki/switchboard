@@ -204,6 +204,35 @@ class ProcessorDeliveryTest(unittest.TestCase):
         self.assertTrue(repeated["idempotent"])
         self.assertEqual(len(calls), 1)
 
+    def test_dispatch_accepts_broker_timeout_after_delivery_acceptance(self) -> None:
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        self.emit()
+        delivery = core.list_processor_deliveries(self.db)[0]
+        relay = self.root / "send-message.py"
+        relay.touch()
+
+        result = core.dispatch_processor_delivery(
+            self.db,
+            delivery["id"],
+            relay=relay,
+            cli_command=["switchboard"],
+            runner=lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=2,
+                stdout='{"status":"timeout","delivery_status":"accepted"}',
+                stderr="",
+            ),
+        )
+
+        self.assertEqual(result["state"], "accepted")
+        current = core.get_processor_delivery(self.db, delivery["id"])
+        self.assertEqual(current["state"], "accepted")
+        self.assertEqual(current["attempts"][-1]["state"], "accepted")
+
 
 if __name__ == "__main__":
     unittest.main()

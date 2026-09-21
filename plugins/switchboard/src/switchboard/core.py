@@ -1802,6 +1802,16 @@ def _processor_delivery_message(
     )
 
 
+def _relay_accepted(result: subprocess.CompletedProcess[str]) -> bool:
+    if result.returncode == 0:
+        return True
+    try:
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(payload, dict) and payload.get("delivery_status") == "accepted"
+
+
 def dispatch_processor_delivery(
     db: Database,
     delivery_id: str,
@@ -1861,7 +1871,7 @@ def dispatch_processor_delivery(
 
     try:
         result = runner(command, capture_output=True, text=True, timeout=timeout + 25)
-        error = None if result.returncode == 0 else (
+        error = None if _relay_accepted(result) else (
             f"relay exited {result.returncode}: " + (result.stderr or result.stdout)[-2000:]
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1959,7 +1969,7 @@ def dispatch_delivery(
 
     try:
         result = runner(command, capture_output=True, text=True, timeout=timeout + 25)
-        error = None if result.returncode == 0 else (
+        error = None if _relay_accepted(result) else (
             f"relay exited {result.returncode}: " + (result.stderr or result.stdout)[-2000:]
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

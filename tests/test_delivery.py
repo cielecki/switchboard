@@ -87,6 +87,23 @@ class DeliveryTest(unittest.TestCase):
         self.assertIn("unavailable", delivery["last_error"])
         self.assertEqual(delivery["attempts"][0]["state"], "failed")
 
+    def test_timeout_exit_is_accepted_when_broker_confirms_delivery(self) -> None:
+        result = core.dispatch_delivery(
+            self.db,
+            self.delivery_id,
+            relay=self.relay,
+            cli_command=["/plugin/bin/switchboard"],
+            runner=lambda command, **_kwargs: subprocess.CompletedProcess(
+                command,
+                2,
+                stdout='{"status":"timeout","delivery_status":"accepted"}',
+                stderr="",
+            ),
+        )
+
+        self.assertEqual(result["state"], "accepted")
+        self.assertEqual(core.get_delivery(self.db, self.delivery_id)["state"], "accepted")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 {
   "name": "switchboard",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "CLI-managed routing tables, structured processor outcomes, and durable waits for AI agents.",
   "author": {
     "name": "Maciej Cielecki"
