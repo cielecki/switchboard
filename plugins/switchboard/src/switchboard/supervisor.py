@@ -50,7 +50,7 @@ def _parse_timestamp(value: str) -> datetime:
 
 
 def _delivery_is_due(delivery: dict[str, Any], at: datetime, retry_seconds: int) -> bool:
-    attempts = delivery.get("attempts") or []
+    attempts = delivery.get("current_attempts", delivery.get("attempts")) or []
     if not attempts:
         return True
     latest = attempts[-1]
@@ -70,7 +70,7 @@ def _processor_delivery_issue(
         if accepted_at and _parse_timestamp(accepted_at) <= threshold:
             return "wake accepted but the processor run was not claimed"
     if delivery["state"] == "pending":
-        attempts = delivery.get("attempts") or []
+        attempts = delivery.get("current_attempts", delivery.get("attempts")) or []
         if attempts and attempts[-1]["state"] == "failed":
             finished = attempts[-1].get("finished_at") or attempts[-1]["started_at"]
             if _parse_timestamp(finished) <= threshold:

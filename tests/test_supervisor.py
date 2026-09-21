@@ -373,6 +373,68 @@ class SupervisorTest(unittest.TestCase):
             "processor-recovered",
         ])
 
+    def test_requeued_generation_ignores_previous_delivery_failure(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_route(
+            self.db,
+            space_id="demo",
+            name="triage",
+            predicate={"event_type": "message.received"},
+            processor="mail-triage",
+        )
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        emitted = core.emit_event(
+            self.db,
+            source_id="mail",
+            external_id="message-retry",
+            event_type="message.received",
+            attributes={},
+        )
+        run_id = emitted["processor_runs"][0]
+        delivery = core.list_processor_deliveries(self.db)[0]
+        old = (datetime.now().astimezone() - timedelta(minutes=20)).isoformat()
+        with self.db.transaction() as connection:
+            connection.execute(
+                "INSERT INTO processor_delivery_attempts(id, delivery_id, request_id, state, "
+                "started_at, finished_at, detail) VALUES(?,?,?,?,?,?,?)",
+                (
+                    "pdattempt_old",
+                    delivery["id"],
+                    "msg_broker_previous_generation",
+                    "failed",
+                    old,
+                    old,
+                    "old failure",
+                ),
+            )
+        core.claim_processor_run(self.db, run_id, worker="chat:claude:session-1")
+        core.finish_processor_run(
+            self.db,
+            run_id,
+            state="needs-review",
+            worker="chat:claude:session-1",
+        )
+        core.resolve_processor_review(self.db, run_id, resolution="retry")
+
+        current = core.get_processor_delivery(self.db, delivery["id"])
+        self.assertEqual(len(current["attempts"]), 1)
+        self.assertEqual(current["current_attempts"], [])
+        result = run_cycle(
+            self.db,
+            relay=None,
+            cli_command=["switchboard"],
+            at=datetime.now().astimezone(),
+            alert_command=["/alert"],
+            alert_runner=lambda *_args: {"sent": True},
+        )
+        self.assertEqual(result["alerts"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

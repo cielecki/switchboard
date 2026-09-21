@@ -1769,6 +1769,15 @@ def get_processor_delivery(db: Database, delivery_id: str) -> dict[str, Any]:
         "SELECT * FROM processor_delivery_attempts WHERE delivery_id=? ORDER BY started_at",
         (delivery_id,),
     )
+    request_material = f"{delivery['idempotency_key']}:{delivery['generation']}"
+    current_request_id = "msg_broker_" + hashlib.sha256(
+        request_material.encode()
+    ).hexdigest()[:32]
+    delivery["current_attempts"] = [
+        attempt
+        for attempt in delivery["attempts"]
+        if attempt["request_id"] == current_request_id
+    ]
     return delivery
 
 
