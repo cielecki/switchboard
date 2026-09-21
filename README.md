@@ -129,6 +129,11 @@ Add `--slack-discovery-script /absolute/path/to/watch_inbound_slack.sh` to perfo
 mention poll in the same schedule. Switchboard stores only stable message/thread pointers and
 coarse state; message text remains in Slack.
 
+When migrating an existing Slack watcher, create the schedule before its route or binding and let
+one poll complete. Inspect or close any historical pointers imported from the old cursor, then
+enable routing. This establishes the live baseline without delivering an old mention backlog to a
+processor chat.
+
 ## Persistent supervisor
 
 Create a recurring ingest observation schedule, then run one cycle:

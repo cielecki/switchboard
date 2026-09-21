@@ -75,3 +75,8 @@ bounded poll with `MAX_POLLS=1`, then reads the ledger. An optional bounded Slac
 stable message and thread pointers without copying the user ID or message text into Switchboard.
 These polls do not triage, create CRM records, send mail, or post to Slack. Existing source locks
 remain authoritative, and operators must preserve one publishing owner per mailbox.
+
+For a migration with an existing Slack cursor, run the first scheduled poll before creating or
+enabling the Slack route and binding. Review or close the historical baseline in Switchboard, then
+enable routing for subsequent mentions. Creating the route first can turn old cursor history into
+live processor work.

@@ -88,6 +88,8 @@ coarse state only; never copy message bodies, sender details, or private researc
 Lead verdicts, CRM writes, mail, and Slack publication remain owned by the inbound-leads workflow.
 An optional `--slack-discovery-script` runs one bounded mention poll and stores only message/thread
 pointers; route those events separately from lead pointers even when they share the same chat.
+During migration from an existing watcher, run the schedule once before enabling that route and
+binding, reconcile the imported baseline, and only then begin live delivery.
 
 Manage recurring adapters only through `schedule` commands. `supervisor once` is appropriate for a
 verified manual cycle; `service install` manages the persistent macOS launch agent. Do not edit the
