@@ -597,10 +597,10 @@ def service_cli_command() -> list[str]:
 
 
 def print_result(value: Any, machine: bool) -> None:
-    if value is None:
-        return
     if machine:
         print(json.dumps({"ok": True, "data": value}, ensure_ascii=False, sort_keys=True))
+        return
+    if value is None:
         return
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
 
@@ -613,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
         result = dispatch(args, db)
         print_result(result, args.json)
         return 0
-    except (ValueError, sqlite3.IntegrityError) as exc:
+    except (ValueError, sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
         else:

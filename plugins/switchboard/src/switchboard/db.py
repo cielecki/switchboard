@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -265,9 +266,13 @@ CREATE INDEX IF NOT EXISTS idx_delivery_attempts_delivery ON delivery_attempts(d
 CREATE INDEX IF NOT EXISTS idx_source_health_source ON source_health(source_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_runs_started ON adapter_runs(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_schedules_due ON adapter_schedules(enabled, next_run_at);
-
-INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '5');
+""" + f"""
+INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '{SCHEMA_VERSION}');
 """
+
+# Every table and index SCHEMA creates. A database holding all of them at SCHEMA_VERSION
+# needs no schema pass, so reads never have to take the write lock.
+SCHEMA_OBJECTS = frozenset(re.findall(r"CREATE (?:TABLE|INDEX) IF NOT EXISTS (\w+)", SCHEMA))
 
 
 DELIVERIES_V2 = """
@@ -294,9 +299,48 @@ def default_db_path() -> Path:
     return (root / "switchboard" / "switchboard.sqlite3").resolve()
 
 
+def schema_is_current(connection: sqlite3.Connection) -> bool:
+    present = {
+        row["name"]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')"
+        )
+    }
+    if not SCHEMA_OBJECTS <= present:
+        return False
+    version = connection.execute(
+        "SELECT value FROM schema_meta WHERE key='schema_version'"
+    ).fetchone()
+    return version is not None and version["value"] == str(SCHEMA_VERSION)
+
+
+def migrate(connection: sqlite3.Connection) -> None:
+    existing = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='deliveries'"
+    ).fetchone()
+    if existing is not None and "'accepted'" not in existing["sql"]:
+        connection.executescript(
+            "ALTER TABLE deliveries RENAME TO deliveries_v1;\n"
+            + DELIVERIES_V2
+            + """
+            INSERT INTO deliveries(
+                id, event_id, wait_id, consumer, idempotency_key, state,
+                created_at, acknowledged_at
+            )
+            SELECT id, event_id, wait_id, consumer, idempotency_key, state,
+                   created_at, acknowledged_at
+            FROM deliveries_v1;
+            DROP TABLE deliveries_v1;
+            """
+        )
+    connection.executescript(SCHEMA)
+    connection.commit()
+
+
 class Database:
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path).expanduser().resolve() if path else default_db_path()
+        self._schema_ready = False
 
     def connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -314,27 +358,15 @@ class Database:
             connection.close()
 
     def initialize(self) -> None:
+        # The schema script writes schema_meta, so running it needs the write lock. Check
+        # read-only first and run it only for a new or outdated database, at most once per
+        # instance; otherwise read commands stall behind the supervisor's transactions.
+        if self._schema_ready:
+            return
         with self.session() as connection:
-            existing = connection.execute(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name='deliveries'"
-            ).fetchone()
-            if existing is not None and "'accepted'" not in existing["sql"]:
-                connection.executescript(
-                    "ALTER TABLE deliveries RENAME TO deliveries_v1;\n"
-                    + DELIVERIES_V2
-                    + """
-                    INSERT INTO deliveries(
-                        id, event_id, wait_id, consumer, idempotency_key, state,
-                        created_at, acknowledged_at
-                    )
-                    SELECT id, event_id, wait_id, consumer, idempotency_key, state,
-                           created_at, acknowledged_at
-                    FROM deliveries_v1;
-                    DROP TABLE deliveries_v1;
-                    """
-                )
-            connection.executescript(SCHEMA)
-            connection.commit()
+            if not schema_is_current(connection):
+                migrate(connection)
+        self._schema_ready = True
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
