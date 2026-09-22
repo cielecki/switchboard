@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uv run --python ${{ matrix.python-version }} python -m unittest discover -s tests -v
       - if: matrix.python-version == '3.12'
         run: uv build
