@@ -39,6 +39,7 @@ sufficient proof of a mutation.
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json schedule list
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json supervisor status
 "${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json service status
+"${CLAUDE_PLUGIN_ROOT}/bin/switchboard" --json doctor
 ```
 
 Register a wait only when the current task has a stable consumer identifier and a concrete event
@@ -105,3 +106,9 @@ anchored to that timestamp rather than drifting with execution duration.
 Manage recurring adapters only through `schedule` commands. `supervisor once` is appropriate for a
 verified manual cycle; `service install` manages the persistent macOS launch agent. Do not edit the
 database, launchd plist, or supervisor lock file directly. The web dashboard remains read-only.
+
+Use `topology export|plan|apply` for portable non-secret configuration. Resolve exported
+`${VARIABLE}` placeholders explicitly. An apply owns only resources declared by the document's
+owner and must not use `--prune` unless removal was requested and the plan was reviewed. Use
+`doctor` for diagnostics and `backup create|verify` for safe online backups. Version 0.9 never
+automatically restores over a live database.

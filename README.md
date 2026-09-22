@@ -25,10 +25,12 @@ The first vertical slice provides:
 - ordered, first-match routing tables that create idempotent processor jobs;
 - structured processor outcomes with separate facts, decisions, actions, and errors;
 - durable processor-to-chat bindings, delivery history, and expiring work leases;
-- deduplicated unreachable and recovery alerts through a configurable local command;
-- a dedicated inbound-leads adapter that stores pointers and state, never message bodies.
+- consumer-level unreachable and recovery alert episodes through a configurable local command;
+- a dedicated inbound-leads adapter that stores pointers and state, never message bodies;
 - independently executing schedules with descendant-safe timeouts;
 - deterministic timer events, human-review resolution, and space-filtered queue views.
+- declarative topology planning and idempotent apply through the CLI;
+- self-diagnosis plus verified online SQLite backups.
 
 Existing capture and lead-processing systems can integrate as adapters before any migration or
 replacement. Domain processors remain responsible for their own policy and external writes.
@@ -64,6 +66,40 @@ switchboard --json status
 
 By default, data lives at `~/.local/share/switchboard/switchboard.sqlite3`. Override it with
 `SWITCHBOARD_DB` or the global `--db` option. Plugin updates never own or replace that state.
+
+## Portable operations
+
+Export a redacted topology template, resolve its explicit variables, inspect the plan, and apply it
+idempotently:
+
+```bash
+switchboard --json topology export --owner my-switchboard --output topology.json
+switchboard --json topology plan topology.json \
+  --var WORKER=chat:claude:my-session --var PATH_1=/absolute/path/to/script.py
+switchboard --json topology apply topology.json \
+  --var WORKER=chat:claude:my-session --var PATH_1=/absolute/path/to/script.py
+```
+
+For a private machine-local snapshot that can be reapplied directly, add
+`--include-local-values`. Switchboard writes topology output with mode `0600`; never commit that
+form to a public repository.
+
+An owner may update only resources it manages. Existing unmanaged resources cause an explicit
+conflict. Missing managed resources are retained unless `--prune` is given; pruning disables
+resources with operational history and retains spaces rather than destroying evidence. See the
+[operations guide](plugins/switchboard/docs/operations.md) and
+[generic example](examples/topology.json).
+
+Diagnose the installed runtime and create a verified online backup without stopping the service:
+
+```bash
+switchboard --json doctor
+switchboard --json backup create /absolute/path/to/switchboard-2026-09-22.sqlite3
+switchboard --json backup verify /absolute/path/to/switchboard-2026-09-22.sqlite3
+```
+
+`doctor` exits non-zero when it finds a condition that prevents safe operation. Restoration stays
+an explicit operator procedure in 0.9; never replace the live database while the supervisor runs.
 
 ## Adapters and delivery
 
@@ -196,7 +232,10 @@ switchboard --json service install --relay /absolute/path/to/chats/send-message.
 switchboard --json service status
 ```
 
-The alert command receives one JSON payload on standard input. This keeps phone numbers, messenger
+The alert command receives one JSON payload on standard input. An outage opens one durable alert
+episode per consumer, absorbs any additional affected deliveries, and emits one recovery after the
+final issue clears. Claims are persisted before invoking the command, so restarts or command
+failures cannot create notification storms. This keeps phone numbers, messenger
 credentials, and machine-specific policy outside the public plugin. The default web address is
 <http://127.0.0.1:8765>. Re-run `service install` after updating the
 plugin so launchd points at the newly installed version. See

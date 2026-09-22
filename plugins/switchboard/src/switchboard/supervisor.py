@@ -243,84 +243,132 @@ def process_processor_alerts(
         delivery["id"]: core.get_processor_delivery(db, delivery["id"])
         for delivery in core.list_processor_deliveries(db)
     }
+    issues_by_consumer: dict[str, list[tuple[dict[str, Any], str]]] = {}
     for delivery in current.values():
         issue = _processor_delivery_issue(delivery, at, alert_after_seconds)
         if issue is None:
             continue
-        existing = db.row(
-            "SELECT * FROM processor_alerts WHERE delivery_id=? AND generation=?",
-            (delivery["id"], delivery["generation"]),
-        )
-        if existing is not None:
-            continue
-        alert_id = core.make_id("palert")
+        issues_by_consumer.setdefault(delivery["consumer"], []).append((delivery, issue))
+
+    for consumer, issues in sorted(issues_by_consumer.items()):
+        issues.sort(key=lambda item: (item[0]["created_at"], item[0]["id"]))
+        representative, issue = issues[0]
+        alert_id: str | None = None
         with db.transaction() as connection:
-            connection.execute(
-                "INSERT INTO processor_alerts(id, delivery_id, generation, state, opened_at, "
-                "detail) VALUES(?,?,?,'open',?,?)",
-                (alert_id, delivery["id"], delivery["generation"], timestamp, issue),
-            )
-            core.audit(
-                connection,
-                command="processor.alert-open",
-                entity_type="processor_alert",
-                entity_id=alert_id,
-                payload={"delivery_id": delivery["id"], "detail": issue},
-                actor="supervisor",
-            )
+            existing = connection.execute(
+                "SELECT * FROM processor_alerts WHERE consumer=? AND state='open'",
+                (consumer,),
+            ).fetchone()
+            if existing is None:
+                alert_id = core.make_id("palert")
+                connection.execute(
+                    "INSERT INTO processor_alerts("
+                    "id, delivery_id, generation, consumer, state, opened_at, "
+                    "notification_claimed_at, last_seen_at, affected_delivery_count, detail"
+                    ") VALUES(?,?,?,?,'open',?,?,?,?,?)",
+                    (
+                        alert_id,
+                        representative["id"],
+                        representative["generation"],
+                        consumer,
+                        timestamp,
+                        timestamp,
+                        timestamp,
+                        len(issues),
+                        issue,
+                    ),
+                )
+                core.audit(
+                    connection,
+                    command="processor.alert-open",
+                    entity_type="processor_alert",
+                    entity_id=alert_id,
+                    payload={
+                        "consumer": consumer,
+                        "delivery_id": representative["id"],
+                        "affected_delivery_count": len(issues),
+                        "detail": issue,
+                    },
+                    actor="supervisor",
+                )
+            else:
+                connection.execute(
+                    "UPDATE processor_alerts SET last_seen_at=?, affected_delivery_count=?, "
+                    "detail=? WHERE id=?",
+                    (timestamp, len(issues), issue, existing["id"]),
+                )
+        if alert_id is None:
+            continue
+        processors = sorted({item[0]["run"]["processor"] for item in issues})
         payload = {
             "kind": "processor-unreachable",
             "message": (
-                f"Switchboard cannot reach {delivery['consumer']} for processor "
-                f"{delivery['run']['processor']} ({delivery['processor_run_id']}): {issue}."
+                f"Switchboard cannot reach {consumer}; {len(issues)} processor "
+                f"delivery{' is' if len(issues) == 1 else 'ies are'} affected: {issue}."
             ),
-            "delivery_id": delivery["id"],
-            "processor_run_id": delivery["processor_run_id"],
-            "consumer": delivery["consumer"],
+            "consumer": consumer,
+            "delivery_id": representative["id"],
+            "processor_run_id": representative["processor_run_id"],
+            "affected_delivery_count": len(issues),
+            "processors": processors,
         }
         try:
             result = alert_runner(alert_command, payload)
             outcome = {"id": alert_id, "state": "notified", **result}
+            error = None
         except Exception as exc:  # noqa: BLE001 - record once to prevent alert storms
-            outcome = {"id": alert_id, "state": "failed", "error": str(exc)}
+            error = str(exc)
+            outcome = {"id": alert_id, "state": "failed", "error": error}
         with db.transaction() as connection:
             connection.execute(
-                "UPDATE processor_alerts SET notified_at=? WHERE id=?", (timestamp, alert_id)
+                "UPDATE processor_alerts SET notified_at=?, notification_error=? WHERE id=?",
+                (timestamp, error, alert_id),
             )
         results.append(outcome)
 
-    open_alerts = db.rows("SELECT * FROM processor_alerts WHERE state='open' ORDER BY opened_at")
+    open_alerts = db.rows(
+        "SELECT * FROM processor_alerts WHERE state='open' AND consumer IS NOT NULL "
+        "ORDER BY opened_at"
+    )
     for alert in open_alerts:
-        delivery = current.get(alert["delivery_id"])
-        issue = (
-            _processor_delivery_issue(delivery, at, alert_after_seconds)
-            if delivery is not None and delivery["generation"] == alert["generation"]
-            else None
-        )
-        if issue is not None:
+        if alert["consumer"] in issues_by_consumer or alert["recovery_claimed_at"] is not None:
+            continue
+        with db.transaction() as connection:
+            claimed = connection.execute(
+                "UPDATE processor_alerts SET recovery_claimed_at=? "
+                "WHERE id=? AND state='open' AND recovery_claimed_at IS NULL",
+                (timestamp, alert["id"]),
+            ).rowcount
+        if not claimed:
             continue
         payload = {
             "kind": "processor-recovered",
-            "message": f"Switchboard recovered delivery {alert['delivery_id']}.",
+            "message": f"Switchboard recovered consumer {alert['consumer']}.",
+            "consumer": alert["consumer"],
             "delivery_id": alert["delivery_id"],
         }
         try:
             result = alert_runner(alert_command, payload)
             outcome = {"id": alert["id"], "state": "recovery-notified", **result}
+            error = None
         except Exception as exc:  # noqa: BLE001 - record once to prevent alert storms
-            outcome = {"id": alert["id"], "state": "recovery-failed", "error": str(exc)}
+            error = str(exc)
+            outcome = {"id": alert["id"], "state": "recovery-failed", "error": error}
         with db.transaction() as connection:
             connection.execute(
                 "UPDATE processor_alerts SET state='recovered', recovered_at=?, "
-                "recovery_notified_at=? WHERE id=?",
-                (timestamp, timestamp, alert["id"]),
+                "recovery_notified_at=?, recovery_error=? WHERE id=?",
+                (timestamp, timestamp, error, alert["id"]),
             )
             core.audit(
                 connection,
                 command="processor.alert-recovered",
                 entity_type="processor_alert",
                 entity_id=alert["id"],
-                payload={"delivery_id": alert["delivery_id"]},
+                payload={
+                    "consumer": alert["consumer"],
+                    "delivery_id": alert["delivery_id"],
+                },
                 actor="supervisor",
             )
         results.append(outcome)

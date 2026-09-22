@@ -14,8 +14,8 @@ Each cycle:
 5. dispatches the oldest eligible wait or processor deliveries, up to the configured per-cycle
    batch limit, when a chats relay is configured, with at most one in-flight processor wake per
    consumer;
-6. sends one configured alert after a processor chat remains unreachable or unclaimed for the
-   threshold, and one recovery alert when it resumes;
+6. opens one consumer-level alert episode after one or more processor deliveries remain unreachable
+   or unclaimed for the threshold, and sends one recovery after the final issue clears;
 7. writes a heartbeat, cycle time, and combined error summary.
 
 A failed or timed-out source cannot stop the coordinator; Switchboard kills the whole external
@@ -32,7 +32,8 @@ finishing it makes the next queued wake eligible.
 
 The optional alert adapter is an argv list supplied through `--alert-command-json`; it receives a
 JSON object on standard input. Switchboard never stores messenger credentials or destinations in
-the repository. Alert records are deduplicated in the database even if the local adapter fails.
+the repository. Notification and recovery claims are stored before the external command runs.
+An adapter failure remains visible on the episode but is not retried into a notification storm.
 
 ## CLI control
 

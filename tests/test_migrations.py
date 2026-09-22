@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from switchboard.db import Database
+from switchboard.db import SCHEMA_VERSION, Database
 
 
 class MigrationTest(unittest.TestCase):
@@ -83,13 +83,44 @@ class MigrationTest(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='adapter_schedules'"
                 ).fetchone()
             self.assertIn("'accepted'", sql)
-            self.assertEqual(version, "5")
+            self.assertEqual(version, str(SCHEMA_VERSION))
             self.assertIsNotNone(schedule_table)
             with db.connect() as migrated:
                 route_table = migrated.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='routes'"
                 ).fetchone()
             self.assertIsNotNone(route_table)
+
+    def test_v5_alert_table_gains_consumer_episode_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "switchboard.sqlite3"
+            db = Database(path)
+            db.initialize()
+            with sqlite3.connect(path) as connection:
+                connection.execute("DROP INDEX idx_processor_alerts_open_consumer")
+                connection.execute("ALTER TABLE processor_alerts RENAME TO processor_alerts_new")
+                connection.execute(
+                    "CREATE TABLE processor_alerts ("
+                    "id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL, generation INTEGER NOT NULL, "
+                    "state TEXT NOT NULL, opened_at TEXT NOT NULL, notified_at TEXT, "
+                    "recovered_at TEXT, recovery_notified_at TEXT, detail TEXT NOT NULL, "
+                    "UNIQUE(delivery_id, generation))"
+                )
+                connection.execute("DROP TABLE processor_alerts_new")
+                connection.execute("UPDATE schema_meta SET value='5' WHERE key='schema_version'")
+
+            Database(path).initialize()
+
+            with sqlite3.connect(path) as connection:
+                columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(processor_alerts)")
+                }
+                version = connection.execute(
+                    "SELECT value FROM schema_meta WHERE key='schema_version'"
+                ).fetchone()[0]
+            self.assertIn("consumer", columns)
+            self.assertIn("recovery_claimed_at", columns)
+            self.assertEqual(version, str(SCHEMA_VERSION))
 
 
 if __name__ == "__main__":

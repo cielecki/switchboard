@@ -10,7 +10,12 @@ from unittest.mock import patch
 
 from switchboard import core
 from switchboard.db import Database
-from switchboard.supervisor import ScheduleWorkers, run_cycle, run_once
+from switchboard.supervisor import (
+    ScheduleWorkers,
+    process_processor_alerts,
+    run_cycle,
+    run_once,
+)
 
 
 class SupervisorTest(unittest.TestCase):
@@ -372,6 +377,106 @@ class SupervisorTest(unittest.TestCase):
             "processor-unreachable",
             "processor-recovered",
         ])
+
+    def test_multiple_failed_deliveries_share_one_consumer_alert_episode(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_route(
+            self.db, space_id="demo", name="triage",
+            predicate={"event_type": "message.received"}, processor="mail-triage",
+        )
+        core.bind_processor(
+            self.db, space_id="demo", processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        for index in range(3):
+            core.emit_event(
+                self.db, source_id="mail", external_id=f"alert-{index}",
+                event_type="message.received", attributes={},
+            )
+        at = datetime.now().astimezone()
+        old = (at - timedelta(minutes=20)).isoformat()
+        deliveries = core.list_processor_deliveries(self.db)
+        with self.db.transaction() as connection:
+            for index, delivery in enumerate(deliveries):
+                request_material = f"{delivery['idempotency_key']}:{delivery['generation']}"
+                import hashlib
+                request_id = "msg_broker_" + hashlib.sha256(request_material.encode()).hexdigest()[:32]
+                connection.execute(
+                    "INSERT INTO processor_delivery_attempts("
+                    "id, delivery_id, request_id, state, started_at, finished_at, detail"
+                    ") VALUES(?,?,?,'failed',?,?,?)",
+                    (f"attempt-{index}", delivery["id"], request_id, old, old, "offline"),
+                )
+        sent: list[dict] = []
+        first = process_processor_alerts(
+            self.db, at=at, alert_after_seconds=900, alert_command=["/alert"],
+            alert_runner=lambda _command, payload: sent.append(payload) or {"sent": True},
+        )
+        second = process_processor_alerts(
+            self.db, at=at, alert_after_seconds=900, alert_command=["/alert"],
+            alert_runner=lambda _command, payload: sent.append(payload) or {"sent": True},
+        )
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+        self.assertEqual(sent[0]["affected_delivery_count"], 3)
+        self.assertEqual(len(core.list_processor_alerts(self.db, "open")), 1)
+
+        with self.db.transaction() as connection:
+            connection.execute("UPDATE processor_deliveries SET state='acknowledged'")
+        recovered = process_processor_alerts(
+            self.db, at=at, alert_after_seconds=900, alert_command=["/alert"],
+            alert_runner=lambda _command, payload: sent.append(payload) or {"sent": True},
+        )
+        repeated = process_processor_alerts(
+            self.db, at=at, alert_after_seconds=900, alert_command=["/alert"],
+            alert_runner=lambda _command, payload: sent.append(payload) or {"sent": True},
+        )
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(repeated, [])
+        self.assertEqual([item["kind"] for item in sent], ["processor-unreachable", "processor-recovered"])
+
+    def test_failed_alert_command_is_claimed_before_invocation_and_not_retried(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_route(
+            self.db, space_id="demo", name="triage",
+            predicate={"event_type": "message.received"}, processor="mail-triage",
+        )
+        core.bind_processor(
+            self.db, space_id="demo", processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        core.emit_event(
+            self.db, source_id="mail", external_id="failed-alert",
+            event_type="message.received", attributes={},
+        )
+        delivery = core.list_processor_deliveries(self.db)[0]
+        at = datetime.now().astimezone()
+        old = (at - timedelta(minutes=20)).isoformat()
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE processor_deliveries SET state='accepted', accepted_at=? WHERE id=?",
+                (old, delivery["id"]),
+            )
+        calls = 0
+
+        def fail(_command, _payload):
+            nonlocal calls
+            calls += 1
+            raise ValueError("notification offline")
+
+        first = process_processor_alerts(
+            self.db, at=at, alert_after_seconds=900, alert_command=["/alert"], alert_runner=fail,
+        )
+        second = process_processor_alerts(
+            self.db, at=at, alert_after_seconds=900, alert_command=["/alert"], alert_runner=fail,
+        )
+        self.assertEqual(first[0]["state"], "failed")
+        self.assertEqual(second, [])
+        self.assertEqual(calls, 1)
+        self.assertEqual(core.list_processor_alerts(self.db, "open")[0]["notification_error"], "notification offline")
 
     def test_requeued_generation_ignores_previous_delivery_failure(self) -> None:
         core.create_space(self.db, "demo")

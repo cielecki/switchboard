@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -160,11 +160,18 @@ CREATE TABLE IF NOT EXISTS processor_alerts (
     id TEXT PRIMARY KEY,
     delivery_id TEXT NOT NULL REFERENCES processor_deliveries(id),
     generation INTEGER NOT NULL,
+    consumer TEXT,
     state TEXT NOT NULL CHECK(state IN ('open', 'recovered')),
     opened_at TEXT NOT NULL,
+    notification_claimed_at TEXT,
     notified_at TEXT,
+    notification_error TEXT,
+    last_seen_at TEXT,
+    affected_delivery_count INTEGER NOT NULL DEFAULT 1,
+    recovery_claimed_at TEXT,
     recovered_at TEXT,
     recovery_notified_at TEXT,
+    recovery_error TEXT,
     detail TEXT NOT NULL,
     UNIQUE(delivery_id, generation)
 );
@@ -240,6 +247,17 @@ CREATE TABLE IF NOT EXISTS supervisor_state (
     last_error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS managed_resources (
+    owner TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_key TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    applied_at TEXT NOT NULL,
+    PRIMARY KEY(owner, resource_type, resource_key),
+    UNIQUE(resource_type, entity_id)
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor TEXT NOT NULL,
@@ -262,10 +280,14 @@ CREATE INDEX IF NOT EXISTS idx_processor_delivery_attempts_delivery ON processor
 CREATE INDEX IF NOT EXISTS idx_processor_attempts_run ON processor_attempts(processor_run_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_processor_attempts_lease ON processor_attempts(state, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_processor_alerts_state ON processor_alerts(state, opened_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_processor_alerts_open_consumer
+ON processor_alerts(consumer) WHERE state='open' AND consumer IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_delivery_attempts_delivery ON delivery_attempts(delivery_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_source_health_source ON source_health(source_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_runs_started ON adapter_runs(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_schedules_due ON adapter_schedules(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_managed_resources_owner
+ON managed_resources(owner, resource_type);
 """ + f"""
 INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', '{SCHEMA_VERSION}');
 """
@@ -332,6 +354,50 @@ def migrate(connection: sqlite3.Connection) -> None:
             FROM deliveries_v1;
             DROP TABLE deliveries_v1;
             """
+        )
+    alert_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(processor_alerts)").fetchall()
+    }
+    for name, declaration in (
+        ("consumer", "TEXT"),
+        ("notification_claimed_at", "TEXT"),
+        ("notification_error", "TEXT"),
+        ("last_seen_at", "TEXT"),
+        ("affected_delivery_count", "INTEGER NOT NULL DEFAULT 1"),
+        ("recovery_claimed_at", "TEXT"),
+        ("recovery_error", "TEXT"),
+    ):
+        if alert_columns and name not in alert_columns:
+            connection.execute(f"ALTER TABLE processor_alerts ADD COLUMN {name} {declaration}")
+    if alert_columns:
+        duplicates = connection.execute(
+            "SELECT pd.consumer, group_concat(pa.id) AS ids FROM processor_alerts pa "
+            "JOIN processor_deliveries pd ON pd.id=pa.delivery_id "
+            "WHERE pa.state='open' GROUP BY pd.consumer HAVING count(*) > 1"
+        ).fetchall()
+        for duplicate in duplicates:
+            ids = duplicate["ids"].split(",")
+            for alert_id in ids[1:]:
+                connection.execute(
+                    "UPDATE processor_alerts SET state='recovered', "
+                    "recovered_at=COALESCE(recovered_at, opened_at), "
+                    "detail=detail || '; superseded during consumer alert migration' "
+                    "WHERE id=?",
+                    (alert_id,),
+                )
+        connection.execute(
+            "UPDATE processor_alerts SET consumer=("
+            "SELECT pd.consumer FROM processor_deliveries pd "
+            "WHERE pd.id=processor_alerts.delivery_id) WHERE consumer IS NULL"
+        )
+        connection.execute(
+            "UPDATE processor_alerts SET "
+            "notification_claimed_at=COALESCE(notification_claimed_at, notified_at, opened_at), "
+            "last_seen_at=COALESCE(last_seen_at, opened_at), "
+            "recovery_claimed_at=CASE WHEN state='recovered' THEN "
+            "COALESCE(recovery_claimed_at, recovery_notified_at, recovered_at) "
+            "ELSE recovery_claimed_at END"
         )
     connection.executescript(SCHEMA)
     connection.commit()

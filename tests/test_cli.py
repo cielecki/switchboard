@@ -10,6 +10,8 @@ import time
 import unittest
 from pathlib import Path
 
+from switchboard.db import SCHEMA_VERSION
+
 
 class CliTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -88,7 +90,7 @@ class CliTest(unittest.TestCase):
         status = self.run_cli("status")
         self.assertEqual(status["counts"]["pending_deliveries"], 1)
         self.assertEqual(status["counts"]["open_processor_runs"], 1)
-        self.assertEqual(status["schema_version"], 5)
+        self.assertEqual(status["schema_version"], SCHEMA_VERSION)
 
     def seed_read_only_commands(self) -> tuple[tuple[str, ...], ...]:
         self.run_cli("space", "create", "demo")

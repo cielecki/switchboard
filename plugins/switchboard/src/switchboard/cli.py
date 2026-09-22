@@ -10,9 +10,12 @@ from typing import Any
 
 from . import core
 from .adapters import run_command_adapter, run_inbound_leads, run_ingest_shadow
+from .backup import create_backup, verify_backup
 from .db import SCHEMA_VERSION, Database
+from .doctor import run_doctor
 from .service import install_launch_agent, service_status, uninstall_launch_agent
 from .supervisor import run_forever, run_once
+from .topology import apply_topology, export_topology, load_topology, plan_topology
 from .web import serve
 
 
@@ -69,6 +72,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser("init", help="initialize the database")
     commands.add_parser("status", help="show store and queue counts")
+    commands.add_parser("doctor", help="diagnose the database, schedules, service, and queues")
+
+    topology = commands.add_parser(
+        "topology", help="export, plan, and apply declarative topology"
+    ).add_subparsers(dest="verb", required=True)
+    export = topology.add_parser("export")
+    export.add_argument("--owner", default="exported")
+    export.add_argument("--output")
+    export.add_argument("--force", action="store_true")
+    export.add_argument(
+        "--include-local-values",
+        action="store_true",
+        help="include machine paths and consumer IDs; keep the output private",
+    )
+    for verb in ("plan", "apply"):
+        topology_action = topology.add_parser(verb)
+        topology_action.add_argument("file")
+        topology_action.add_argument("--var", action="append", type=key_value, default=[])
+        topology_action.add_argument("--prune", action="store_true")
+
+    backup = commands.add_parser("backup", help="create and verify SQLite backups").add_subparsers(
+        dest="verb", required=True
+    )
+    backup_create = backup.add_parser("create")
+    backup_create.add_argument("file")
+    backup_verify = backup.add_parser("verify")
+    backup_verify.add_argument("file")
 
     space = commands.add_parser("space", help="manage spaces").add_subparsers(dest="verb", required=True)
     create = space.add_parser("create")
@@ -339,6 +369,33 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
         return {"database": str(db.path), "schema_version": SCHEMA_VERSION}
     if args.command == "status":
         return core.status(db)
+    if args.command == "doctor":
+        return run_doctor(db)
+    if args.command == "topology":
+        if args.verb == "export":
+            document = export_topology(
+                db, owner=args.owner, include_local_values=args.include_local_values
+            )
+            if args.output:
+                output = Path(args.output).expanduser().resolve()
+                if output.exists() and not args.force:
+                    raise ValueError(f"topology output already exists: {output}")
+                output.parent.mkdir(parents=True, exist_ok=True)
+                encoded = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+                output.write_text(encoded)
+                output.chmod(0o600)
+                if output.read_text() != encoded:
+                    raise ValueError(f"failed to verify topology export: {output}")
+                return {"path": str(output), "owner": document["owner"]}
+            return document
+        document = load_topology(args.file, dict(args.var))
+        if args.verb == "plan":
+            return plan_topology(db, document, prune=args.prune)
+        return apply_topology(db, document, prune=args.prune)
+    if args.command == "backup":
+        if args.verb == "create":
+            return create_backup(db, args.file)
+        return verify_backup(args.file)
     if args.command == "space":
         if args.verb == "create":
             return core.create_space(db, args.id, args.name)
@@ -678,6 +735,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = dispatch(args, db)
         print_result(result, args.json)
+        if args.command == "doctor" and result["errors"]:
+            return 1
         return 0
     except (ValueError, sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
         if args.json:

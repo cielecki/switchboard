@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "owner": "switchboard-example",
+  "variables": {
+    "WORKER": {
+      "required": true,
+      "description": "Durable Claude Code, Codex, or OpenCode chat consumer"
+    }
+  },
+  "spaces": [
+    {
+      "id": "example-operations",
+      "name": "Example operations"
+    }
+  ],
+  "sources": [
+    {
+      "id": "timer/example-daily",
+      "space": "example-operations",
+      "kind": "timer",
+      "config": {}
+    }
+  ],
+  "routes": [
+    {
+      "key": "daily-maintenance",
+      "space": "example-operations",
+      "name": "Daily maintenance",
+      "priority": 10,
+      "predicate": {
+        "source_id": "timer/example-daily",
+        "event_type": "maintenance.due"
+      },
+      "processor": "example:maintenance",
+      "enabled": true
+    }
+  ],
+  "schedules": [
+    {
+      "id": "example-daily",
+      "adapter": "timer",
+      "every_seconds": 86400,
+      "enabled": false,
+      "config": {
+        "space_id": "example-operations",
+        "source_id": "timer/example-daily",
+        "event_type": "maintenance.due",
+        "attributes": {
+          "scope": "example"
+        }
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "key": "example-maintenance-worker",
+      "space": "example-operations",
+      "processor": "example:maintenance",
+      "consumer": "${WORKER}",
+      "enabled": true,
+      "activate_inactive": false,
+      "lease_seconds": 900
+    }
+  ]
+}

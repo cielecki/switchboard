@@ -31,8 +31,10 @@ owns no mutations. Delivery adapters wake agent hosts without taking ownership o
   consumer; the remaining runs stay queued in the database. Transport acceptance is distinct from
   finishing the run, while `claim-next` atomically accepts the selected delivery and leases its run.
 - **Processor attempt:** atomic worker claim with an expiring lease, heartbeat, and terminal state.
-- **Processor alert:** deduplicated evidence that a delivery was unreachable or accepted but not
-  claimed, followed by a recorded recovery.
+- **Processor alert episode:** consumer-level evidence that one or more deliveries were unreachable
+  or accepted but not claimed, followed by a recorded recovery after the final issue clears.
+- **Managed resource:** ownership record connecting one declarative topology to the resources it
+  may reconcile without taking control of unrelated CLI-created state.
 - **Schedule:** CLI-managed cadence and private adapter configuration stored outside the plugin.
 - **Supervisor:** single-instance loop that runs schedules, dispatches deliveries, records a
   heartbeat, and hosts read-only observability.
@@ -72,3 +74,6 @@ matched work is complete.
 The supervisor never converts transport acceptance into task completion. It isolates adapter and
 delivery failures, advances schedules deterministically, and exposes its last heartbeat and error
 without making the web interface a control surface.
+
+Topology, diagnosis, backup, and every other mutation or operational check remain CLI concerns.
+The read-only HTTP server does not expose an apply, repair, or restore endpoint.
