@@ -11,7 +11,8 @@ Each cycle:
 3. advances each schedule by its configured interval;
 4. recovers expired processor leases and materializes missing bound deliveries;
 5. dispatches the oldest eligible wait or processor deliveries, up to the configured per-cycle
-   batch limit, when a chats relay is configured;
+   batch limit, when a chats relay is configured, with at most one in-flight processor wake per
+   consumer;
 6. sends one configured alert after a processor chat remains unreachable or unclaimed for the
    threshold, and one recovery alert when it resumes;
 7. writes a heartbeat, cycle time, and combined error summary.
@@ -24,6 +25,9 @@ the initial queue contains many chat wakes. Increase it only when the relay is k
 quickly.
 Processor requeues increment a delivery generation, producing a new stable request ID without
 duplicating a prior accepted wake.
+After a long consumer outage, the backlog remains durable without producing one chat message per
+run. When the consumer resumes, `processor claim-next` leases the oldest pending run atomically;
+finishing it makes the next queued wake eligible.
 
 The optional alert adapter is an argv list supplied through `--alert-command-json`; it receives a
 JSON object on standard input. Switchboard never stores messenger credentials or destinations in

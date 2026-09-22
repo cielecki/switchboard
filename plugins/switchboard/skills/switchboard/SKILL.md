@@ -66,7 +66,8 @@ Cancel obsolete waits explicitly:
 Routes use the same predicate fields as waits, are ordered by ascending priority, and stop at the
 first match. A match creates a processor run; it does not execute the processor. A
 `processor bind` command associates one space/processor pair with a stable chat consumer and
-backfills its pending runs. The destination must use `processor claim --worker <consumer>` before
+backfills its pending runs. The destination must use `processor claim-next --worker <consumer>` to
+atomically lease the oldest queued run before
 work, `processor heartbeat` during long work, and `complete|fail|needs-review --worker <consumer>`
 with structured facts, a decision, and actions. Use `processor release` when handing work back.
 Keep concise human-readable context in `--summary`, not as an unstructured replacement for those

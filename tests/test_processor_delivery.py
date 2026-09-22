@@ -83,6 +83,70 @@ class ProcessorDeliveryTest(unittest.TestCase):
         self.assertEqual(core.get_processor_run(self.db, run_id)["state"], "pending")
         self.assertEqual(core.get_processor_run(self.db, run_id)["delivery"]["generation"], 2)
 
+    def test_claim_accepts_delivery_atomically(self) -> None:
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        run_id = self.emit()
+
+        claimed = core.claim_processor_run(
+            self.db, run_id, worker="chat:claude:session-1"
+        )
+
+        self.assertEqual(claimed["state"], "running")
+        self.assertEqual(claimed["delivery"]["state"], "accepted")
+
+        other = self.emit("message-other")
+        with self.assertRaisesRegex(ValueError, "active processor run"):
+            core.claim_processor_run(
+                self.db, other, worker="chat:claude:session-1"
+            )
+
+    def test_claim_rejects_non_owner(self) -> None:
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        run_id = self.emit()
+
+        with self.assertRaisesRegex(ValueError, "not bound to worker"):
+            core.claim_processor_run(
+                self.db, run_id, worker="chat:claude:wrong-session"
+            )
+
+    def test_claim_next_drains_oldest_one_at_a_time_after_outage(self) -> None:
+        worker = "chat:claude:session-1"
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer=worker,
+        )
+        first = self.emit("message-1")
+        second = self.emit("message-2")
+
+        claimed = core.claim_next_processor_run(self.db, worker=worker)
+        self.assertEqual(claimed["id"], first)
+        self.assertEqual(claimed["delivery"]["state"], "accepted")
+        with self.assertRaisesRegex(ValueError, "already has an active processor run"):
+            core.claim_next_processor_run(self.db, worker=worker)
+
+        core.finish_processor_run(self.db, first, state="completed", worker=worker)
+        next_claimed = core.claim_next_processor_run(self.db, worker=worker)
+        self.assertEqual(next_claimed["id"], second)
+
+    def test_claim_next_returns_none_for_empty_consumer_queue(self) -> None:
+        self.assertIsNone(
+            core.claim_next_processor_run(
+                self.db, worker="chat:claude:unbound-session"
+            )
+        )
+
     def test_terminal_outcome_requires_owner_and_acknowledges_delivery(self) -> None:
         core.bind_processor(
             self.db,
@@ -192,7 +256,7 @@ class ProcessorDeliveryTest(unittest.TestCase):
         self.assertEqual(result["state"], "accepted")
         self.assertIn("--activate-if-inactive", calls[0])
         message = calls[0][calls[0].index("--message") + 1]
-        self.assertIn(f"processor claim {run_id}", message)
+        self.assertIn("processor claim-next", message)
         self.assertIn("--worker chat:claude:session-1", message)
         repeated = core.dispatch_processor_delivery(
             self.db,
@@ -203,6 +267,43 @@ class ProcessorDeliveryTest(unittest.TestCase):
         )
         self.assertTrue(repeated["idempotent"])
         self.assertEqual(len(calls), 1)
+
+    def test_only_one_delivery_is_dispatched_per_consumer(self) -> None:
+        worker = "chat:claude:session-1"
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer=worker,
+        )
+        self.emit("message-1")
+        self.emit("message-2")
+        deliveries = list(reversed(core.list_processor_deliveries(self.db)))
+        relay = self.root / "send-message.py"
+        relay.touch()
+        runner = lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout="accepted", stderr=""
+        )
+
+        core.dispatch_processor_delivery(
+            self.db,
+            deliveries[0]["id"],
+            relay=relay,
+            cli_command=["switchboard"],
+            runner=runner,
+        )
+        with self.assertRaisesRegex(ValueError, "already has in-flight work"):
+            core.dispatch_processor_delivery(
+                self.db,
+                deliveries[1]["id"],
+                relay=relay,
+                cli_command=["switchboard"],
+                runner=runner,
+            )
+
+        consumers = core.list_processor_consumers(self.db)
+        self.assertEqual(consumers[0]["status"], "waiting-for-claim")
+        self.assertEqual(consumers[0]["backlog"], 2)
 
     def test_dispatch_accepts_broker_timeout_after_delivery_acceptance(self) -> None:
         core.bind_processor(

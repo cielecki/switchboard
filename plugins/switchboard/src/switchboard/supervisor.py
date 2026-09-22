@@ -383,7 +383,17 @@ def run_cycle(
 
         for pending in core.list_processor_deliveries(db, "pending"):
             delivery = core.get_processor_delivery(db, pending["id"])
-            if _delivery_is_due(delivery, cycle_at, delivery_retry_seconds):
+            if (
+                _delivery_is_due(delivery, cycle_at, delivery_retry_seconds)
+                and not core.processor_consumer_is_busy(
+                    db, delivery["consumer"], exclude_delivery=delivery["id"]
+                )
+                and not any(
+                    item[1] == "processor"
+                    and item[2]["consumer"] == delivery["consumer"]
+                    for item in candidates
+                )
+            ):
                 candidates.append((delivery["created_at"], "processor", delivery))
 
         candidates.sort(key=lambda candidate: (candidate[0], candidate[2]["id"]))

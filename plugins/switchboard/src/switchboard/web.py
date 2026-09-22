@@ -38,6 +38,7 @@ HTML = """<!doctype html>
   <section><h2>Schedules</h2><div id="schedules"></div></section>
   <section><h2>Open deliveries</h2><div id="deliveries"></div></section>
   <section><h2>Processor bindings</h2><div id="bindings"></div></section>
+  <section><h2>Processor consumers</h2><div id="consumers"></div></section>
   <section><h2>Processor deliveries</h2><div id="processor-deliveries"></div></section>
   <section><h2>Processor alerts</h2><div id="processor-alerts"></div></section>
   <section><h2>Processor queue and outcomes</h2><div id="processors"></div></section>
@@ -57,7 +58,7 @@ function richTable(rows, cols, wrap=[]) {
   return '<table><thead><tr>'+cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(c=>'<td class="'+(wrap.includes(c)?'wrap':'')+'"><code>'+esc(typeof r[c]==='object'?JSON.stringify(r[c]):r[c])+'</code></td>').join('')+'</tr>').join('')+'</tbody></table>';
 }
 async function load() {
-  const [status, spaces, sources, schedules, deliveries, bindings, processorDeliveries, processorAlerts, processors, routes, waits, adapters, events] = await Promise.all(['/api/status','/api/spaces','/api/sources','/api/schedules','/api/deliveries','/api/processor-bindings','/api/processor-deliveries','/api/processor-alerts','/api/processors','/api/routes','/api/waits','/api/adapters','/api/events'].map(u=>fetch(u).then(r=>r.json())));
+  const [status, spaces, sources, schedules, deliveries, bindings, consumers, processorDeliveries, processorAlerts, processors, routes, waits, adapters, events] = await Promise.all(['/api/status','/api/spaces','/api/sources','/api/schedules','/api/deliveries','/api/processor-bindings','/api/processor-consumers','/api/processor-deliveries','/api/processor-alerts','/api/processors','/api/routes','/api/waits','/api/adapters','/api/events'].map(u=>fetch(u).then(r=>r.json())));
   document.querySelector('#db').textContent = status.database;
   const selectedSpace = new URLSearchParams(location.search).get('space');
   const scoped = rows => selectedSpace ? rows.filter(row => row.space_id === selectedSpace || row.config?.space_id === selectedSpace) : rows;
@@ -69,6 +70,7 @@ async function load() {
   document.querySelector('#schedules').innerHTML = table(scoped(schedules), ['id','adapter','enabled','every_seconds','next_run_at','last_state','last_error']);
   document.querySelector('#deliveries').innerHTML = table(deliveries.filter(x=>['pending','accepted'].includes(x.state)), ['id','state','consumer','event_id','created_at']);
   document.querySelector('#bindings').innerHTML = table(scoped(bindings), ['state','space_id','processor','consumer','lease_seconds','activate_inactive','updated_at']);
+  document.querySelector('#consumers').innerHTML = table(consumers, ['consumer','status','backlog','oldest_pending_at','active_runs','accepted_wakes','completed_last_hour','completed_last_day']);
   document.querySelector('#processor-deliveries').innerHTML = table(scoped(processorDeliveries).filter(x=>['pending','accepted'].includes(x.state)), ['id','state','space_id','processor','consumer','processor_run_id','generation','created_at','last_error']);
   document.querySelector('#processor-alerts').innerHTML = table(processorAlerts.filter(x=>x.state==='open'), ['state','delivery_id','generation','detail','opened_at']);
   document.querySelector('#processors').innerHTML = richTable(scoped(processors), ['id','space_id','state','processor','summary','facts','decision','actions','updated_at'], ['summary','facts','decision','actions']);
@@ -109,6 +111,7 @@ def handler_for(db: Database) -> type[BaseHTTPRequestHandler]:
                     "/api/waits": lambda: core.list_waits(db),
                     "/api/deliveries": lambda: core.list_deliveries(db),
                     "/api/processor-bindings": lambda: core.list_processor_bindings(db),
+                    "/api/processor-consumers": lambda: core.list_processor_consumers(db),
                     "/api/processor-deliveries": lambda: core.list_processor_deliveries(db),
                     "/api/processor-alerts": lambda: core.list_processor_alerts(db),
                     "/api/processors": lambda: core.list_processor_runs(db),

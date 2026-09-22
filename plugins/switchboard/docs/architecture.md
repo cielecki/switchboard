@@ -27,8 +27,9 @@ owns no mutations. Delivery adapters wake agent hosts without taking ownership o
   facts, decision, actions, summary, and error state recorded by the specialized workflow.
 - **Processor binding:** CLI-managed association between a space/processor pair and one durable
   agent-chat consumer, including its default lease.
-- **Processor delivery:** durable wake-up owed to that consumer. Transport acceptance is distinct
-  from claiming or finishing the run.
+- **Processor delivery:** durable wake-up owed to that consumer. At most one wake is in flight per
+  consumer; the remaining runs stay queued in the database. Transport acceptance is distinct from
+  finishing the run, while `claim-next` atomically accepts the selected delivery and leases its run.
 - **Processor attempt:** atomic worker claim with an expiring lease, heartbeat, and terminal state.
 - **Processor alert:** deduplicated evidence that a delivery was unreachable or accepted but not
   claimed, followed by a recorded recovery.

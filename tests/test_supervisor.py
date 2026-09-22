@@ -435,6 +435,45 @@ class SupervisorTest(unittest.TestCase):
         )
         self.assertEqual(result["alerts"], [])
 
+    def test_cycle_sends_only_one_wake_per_consumer_during_large_backlog(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_route(
+            self.db,
+            space_id="demo",
+            name="triage",
+            predicate={"event_type": "message.received"},
+            processor="mail-triage",
+        )
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        for index in range(20):
+            core.emit_event(
+                self.db,
+                source_id="mail",
+                external_id=f"message-{index}",
+                event_type="message.received",
+                attributes={},
+            )
+        dispatched: list[str] = []
+
+        result = run_cycle(
+            self.db,
+            relay=self.root / "relay.py",
+            cli_command=["switchboard"],
+            delivery_batch_size=20,
+            processor_delivery_runner=lambda _db, delivery_id, **_kwargs: (
+                dispatched.append(delivery_id) or {"id": delivery_id, "state": "accepted"}
+            ),
+        )
+
+        self.assertEqual(len(dispatched), 1)
+        self.assertEqual(len(result["processor_deliveries"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

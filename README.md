@@ -100,7 +100,7 @@ switchboard --json route create --space nina-inbound --name "New inbound lead" \
 switchboard --json processor bind --space nina-inbound \
   --processor inbound-leads:nina --consumer chat:claude:<claude-cli-session-id> \
   --activate-inactive
-switchboard --json processor claim <processor-run-id> \
+switchboard --json processor claim-next \
   --worker chat:claude:<claude-cli-session-id>
 switchboard --json processor complete <processor-run-id> \
   --worker chat:claude:<claude-cli-session-id> \
@@ -111,9 +111,13 @@ switchboard --json processor complete <processor-run-id> \
 ```
 
 The binding backfills existing pending runs and automatically creates a delivery for each new run.
-Only one worker can hold a run's expiring lease; `processor heartbeat` renews it and
+Switchboard wakes a consumer only when it has no in-flight work, while the remaining backlog stays
+durable in the database. `processor claim-next` atomically selects the oldest pending run, accepts
+its delivery, and creates the worker's lease. A consumer can hold only one live run;
+`processor heartbeat` renews it and
 `processor release` safely requeues it. The read-only dashboard shows bindings, delivery attempts,
-leases, alerts, queue state, concise summary, facts, decision, actions, and errors. CLI commands
+consumer availability, backlog age, drain counts, leases, alerts, queue state, concise summary,
+facts, decision, actions, and errors. CLI commands
 remain the only mutation interface.
 
 Human review is an explicit transition rather than an orphaned terminal state:

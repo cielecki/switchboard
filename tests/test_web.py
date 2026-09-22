@@ -68,6 +68,10 @@ class WebTest(unittest.TestCase):
             bindings = json.load(response)
         self.assertEqual(bindings, [])
 
+        with urllib.request.urlopen(f"{self.base_url}/api/processor-consumers") as response:
+            consumers = json.load(response)
+        self.assertEqual(consumers, [])
+
         with urllib.request.urlopen(f"{self.base_url}/api/processor-deliveries") as response:
             processor_deliveries = json.load(response)
         self.assertEqual(processor_deliveries, [])

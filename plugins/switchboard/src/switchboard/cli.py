@@ -225,6 +225,9 @@ def build_parser() -> argparse.ArgumentParser:
     claim.add_argument("id")
     claim.add_argument("--worker", required=True)
     claim.add_argument("--lease", type=int)
+    claim_next = processor.add_parser("claim-next")
+    claim_next.add_argument("--worker", required=True)
+    claim_next.add_argument("--lease", type=int)
     heartbeat = processor.add_parser("heartbeat")
     heartbeat.add_argument("id")
     heartbeat.add_argument("--worker", required=True)
@@ -496,6 +499,10 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
         if args.verb == "claim":
             return core.claim_processor_run(
                 db, args.id, worker=args.worker, lease_seconds=args.lease
+            )
+        if args.verb == "claim-next":
+            return core.claim_next_processor_run(
+                db, worker=args.worker, lease_seconds=args.lease
             )
         if args.verb == "heartbeat":
             return core.heartbeat_processor_run(
