@@ -247,6 +247,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     processor_delivery_dispatch.add_argument("--activate-inactive", action="store_true")
     processor_delivery_dispatch.add_argument("--timeout", type=int, default=30)
+    processor_delivery_coalesce = processor.add_parser("delivery-coalesce")
+    processor_delivery_coalesce.add_argument("--consumer")
     alert_list = processor.add_parser("alert-list")
     alert_list.add_argument("--state", choices=["open", "recovered"])
     review_resolve = processor.add_parser("review-resolve")
@@ -529,6 +531,12 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 activate_inactive=args.activate_inactive,
                 timeout=args.timeout,
             )
+        if args.verb == "delivery-coalesce":
+            return {
+                "coalesced": core.coalesce_processor_deliveries(
+                    db, consumer=args.consumer
+                )
+            }
         if args.verb == "alert-list":
             return core.list_processor_alerts(db, args.state)
         if args.verb == "review-resolve":

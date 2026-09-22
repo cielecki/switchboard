@@ -120,6 +120,10 @@ consumer availability, backlog age, drain counts, leases, alerts, queue state, c
 facts, decision, actions, and errors. CLI commands
 remain the only mutation interface.
 
+Upgrades from a pre-0.8 database automatically coalesce multiple already-accepted wakes for the
+same consumer into one in-flight wake plus a pending backlog. Operators can also run
+`processor delivery-coalesce [--consumer <consumer>]` explicitly; it never drops a processor run.
+
 Human review is an explicit transition rather than an orphaned terminal state:
 
 ```bash

@@ -358,6 +358,7 @@ def run_cycle(
     errors: list[str] = []
 
     core.recover_expired_processor_attempts(db, cycle_timestamp)
+    core.coalesce_processor_deliveries(db)
 
     if process_schedules:
         for schedule in core.due_schedules(db, cycle_timestamp):

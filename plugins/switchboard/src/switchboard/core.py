@@ -1276,6 +1276,49 @@ def sync_processor_deliveries(db: Database) -> int:
     return created
 
 
+def coalesce_processor_deliveries(db: Database, consumer: str | None = None) -> int:
+    """Restore the one-in-flight invariant for databases created before 0.8."""
+    timestamp = now()
+    filters = "WHERE pd.state='accepted' AND pr.state IN ('pending','running')"
+    params: tuple[Any, ...] = ()
+    if consumer:
+        filters += " AND pd.consumer=?"
+        params = (consumer,)
+    rows = db.rows(
+        "SELECT pd.id, pd.consumer, pd.processor_run_id, pr.state AS run_state, pd.created_at "
+        "FROM processor_deliveries pd JOIN processor_runs pr ON pr.id=pd.processor_run_id "
+        + filters
+        + " ORDER BY pd.consumer, CASE WHEN pr.state='running' THEN 0 ELSE 1 END, "
+        "pd.created_at, pd.id",
+        params,
+    )
+    keep: set[str] = set()
+    duplicate_ids: list[str] = []
+    for row in rows:
+        if row["consumer"] not in keep:
+            keep.add(row["consumer"])
+        else:
+            duplicate_ids.append(row["id"])
+    if not duplicate_ids:
+        return 0
+    with db.transaction() as connection:
+        for delivery_id in duplicate_ids:
+            connection.execute(
+                "UPDATE processor_deliveries SET state='pending', generation=generation+1, "
+                "accepted_at=NULL, last_error=NULL WHERE id=? AND state='accepted'",
+                (delivery_id,),
+            )
+            audit(
+                connection,
+                command="processor.delivery-coalesce",
+                entity_type="processor_delivery",
+                entity_id=delivery_id,
+                payload={"coalesced_at": timestamp},
+                actor="supervisor",
+            )
+    return len(duplicate_ids)
+
+
 def list_processor_runs(
     db: Database,
     *,

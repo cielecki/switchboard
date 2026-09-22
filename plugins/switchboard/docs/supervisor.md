@@ -10,6 +10,7 @@ Each cycle:
    delivery, alerts, or other schedules;
 3. advances each schedule by its configured interval;
 4. recovers expired processor leases and materializes missing bound deliveries;
+   it also coalesces legacy databases that already contain multiple accepted wakes per consumer;
 5. dispatches the oldest eligible wait or processor deliveries, up to the configured per-cycle
    batch limit, when a chats relay is configured, with at most one in-flight processor wake per
    consumer;

@@ -305,6 +305,30 @@ class ProcessorDeliveryTest(unittest.TestCase):
         self.assertEqual(consumers[0]["status"], "waiting-for-claim")
         self.assertEqual(consumers[0]["backlog"], 2)
 
+    def test_upgrade_coalesces_old_accepted_wakes_into_one(self) -> None:
+        worker = "chat:claude:session-1"
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer=worker,
+        )
+        for index in range(20):
+            self.emit(f"legacy-message-{index}")
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE processor_deliveries SET state='accepted', accepted_at=created_at"
+            )
+
+        changed = core.coalesce_processor_deliveries(self.db, worker)
+        states = [item["state"] for item in core.list_processor_deliveries(self.db)]
+
+        self.assertEqual(changed, 19)
+        self.assertEqual(states.count("accepted"), 1)
+        self.assertEqual(states.count("pending"), 19)
+        pending = core.list_processor_deliveries(self.db, "pending")
+        self.assertTrue(all(item["generation"] == 1 for item in pending))
+
     def test_dispatch_accepts_broker_timeout_after_delivery_acceptance(self) -> None:
         core.bind_processor(
             self.db,
