@@ -1121,7 +1121,7 @@ def _ensure_review_group(
 ) -> str:
     key = _normalized_review_key(review_key, run_id)
     review_id = _review_identity(space_id, key)
-    clean_title = (title or summary or key).split(".", 1)[0].strip()[:180] or key
+    clean_title = (title or summary or key).strip()[:180] or key
     connection.execute(
         "INSERT INTO review_groups(id, space_id, review_key, title, summary, url, state, "
         "created_at, updated_at) VALUES(?,?,?,?,?,?,'open',?,?) "

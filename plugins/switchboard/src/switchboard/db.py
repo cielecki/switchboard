@@ -465,8 +465,7 @@ def _backfill_review_groups(connection: sqlite3.Connection) -> None:
         )
         digest = hashlib.sha256(f"{row['space_id']}\0{key}".encode()).hexdigest()[:16]
         review_id = f"review_{digest}"
-        title = str(decision.get("review_title") or row["summary"] or key).split(".", 1)[0]
-        title = title[:180]
+        title = str(decision.get("review_title") or row["summary"] or key).strip()[:180]
         url = decision.get("review_url") or facts.get("review_url")
         connection.execute(
             "INSERT INTO review_groups(id, space_id, review_key, title, summary, url, state, "

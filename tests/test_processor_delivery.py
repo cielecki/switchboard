@@ -84,6 +84,7 @@ class ProcessorDeliveryTest(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0]["run_count"], 2)
         self.assertEqual(groups[0]["open_run_count"], 2)
+        self.assertEqual(groups[0]["title"], "Choose routing policy")
         resolved = core.resolve_review_group(
             self.db,
             groups[0]["id"],
@@ -98,6 +99,20 @@ class ProcessorDeliveryTest(unittest.TestCase):
             self.assertEqual(run["state"], "pending")
             self.assertEqual(run["delivery"]["state"], "pending")
             self.assertEqual(run["decision"]["review"]["choice"], "route-a")
+
+    def test_review_title_keeps_periods_in_dates(self) -> None:
+        run_id = self.emit()
+        core.finish_processor_run(
+            self.db,
+            run_id,
+            state="needs-review",
+            summary="Route the 14.09 recording",
+            review_key="dated-review",
+            review_title="Route the 14.09 recording",
+        )
+
+        group = core.list_review_groups(self.db, state="open")[0]
+        self.assertEqual(group["title"], "Route the 14.09 recording")
 
     def test_claim_release_and_expiry_requeue_with_new_generation(self) -> None:
         core.bind_processor(
