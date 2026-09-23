@@ -59,9 +59,10 @@ configuration and are redacted by portable topology export.
 ## Activation
 
 1. Back up and verify the live database.
-2. Release 0.10.0 from the public `cielecki/switchboard` repository.
+2. Release the 0.10 line from the public `cielecki/switchboard` repository; the live rollout uses
+   the 0.10.1 title-preservation patch.
 3. Update the Codex and Claude plugin installations.
-4. Reinstall the macOS service from the installed 0.10.0 launcher.
+4. Reinstall the macOS service from the installed 0.10.1 launcher.
 5. Let the schema migration backfill review groups, then inspect the plan and adopt the private live
    topology.
 6. Configure private chat labels and links through the CLI.
