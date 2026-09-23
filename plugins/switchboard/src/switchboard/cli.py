@@ -243,6 +243,8 @@ def build_parser() -> argparse.ArgumentParser:
     bind.add_argument("--consumer", required=True)
     bind.add_argument("--lease", type=int, default=1800)
     bind.add_argument("--activate-inactive", action="store_true")
+    bind.add_argument("--label")
+    bind.add_argument("--url")
     bindings = processor.add_parser("bindings")
     bindings.add_argument("--space")
     bindings.add_argument("--state", choices=["enabled", "disabled"])
@@ -287,6 +289,25 @@ def build_parser() -> argparse.ArgumentParser:
     review_resolve.add_argument("--summary", default="")
     review_resolve.add_argument("--decision", type=json_object, default={})
     review_resolve.add_argument("--actions", type=json_array, default=[])
+    review_list = processor.add_parser("review-list")
+    review_list.add_argument("--space")
+    review_list.add_argument("--state", choices=["open", "resolved"])
+    review_show = processor.add_parser("review-show")
+    review_show.add_argument("id")
+    review_link = processor.add_parser("review-link")
+    review_link.add_argument("id", help="processor run id")
+    review_link.add_argument("--key", required=True)
+    review_link.add_argument("--title")
+    review_link.add_argument("--summary")
+    review_link.add_argument("--url")
+    review_group_resolve = processor.add_parser("review-resolve-group")
+    review_group_resolve.add_argument("id")
+    review_group_resolve.add_argument(
+        "--resolution", choices=["complete", "retry"], required=True
+    )
+    review_group_resolve.add_argument("--summary", default="")
+    review_group_resolve.add_argument("--decision", type=json_object, default={})
+    review_group_resolve.add_argument("--actions", type=json_array, default=[])
     for verb in ("complete", "fail", "needs-review"):
         finish_processor = processor.add_parser(verb)
         finish_processor.add_argument("id")
@@ -297,6 +318,10 @@ def build_parser() -> argparse.ArgumentParser:
         finish_processor.add_argument("--actions", type=json_array, default=[])
         if verb in {"fail", "needs-review"}:
             finish_processor.add_argument("--error", required=verb == "fail")
+        if verb == "needs-review":
+            finish_processor.add_argument("--review-key")
+            finish_processor.add_argument("--review-title")
+            finish_processor.add_argument("--review-url")
 
     event = commands.add_parser("event", help="emit and inspect events").add_subparsers(dest="verb", required=True)
     emit = event.add_parser("emit")
@@ -537,6 +562,14 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
         return core.list_routes(db, space_id=args.space, state=args.state)
     if args.command == "processor":
         if args.verb == "bind":
+            existing = next(
+                (
+                    item
+                    for item in core.list_processor_bindings(db, space_id=args.space)
+                    if item["processor"] == args.processor
+                ),
+                None,
+            )
             return core.bind_processor(
                 db,
                 space_id=args.space,
@@ -544,6 +577,8 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 consumer=args.consumer,
                 activate_inactive=args.activate_inactive,
                 lease_seconds=args.lease,
+                label=args.label if args.label is not None else (existing or {}).get("label"),
+                url=args.url if args.url is not None else (existing or {}).get("url"),
             )
         if args.verb == "bindings":
             return core.list_processor_bindings(db, space_id=args.space, state=args.state)
@@ -607,6 +642,28 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 decision=args.decision,
                 actions=args.actions,
             )
+        if args.verb == "review-list":
+            return core.list_review_groups(db, space_id=args.space, state=args.state)
+        if args.verb == "review-show":
+            return core.get_review_group(db, args.id)
+        if args.verb == "review-link":
+            return core.link_processor_review(
+                db,
+                args.id,
+                review_key=args.key,
+                title=args.title,
+                summary=args.summary,
+                url=args.url,
+            )
+        if args.verb == "review-resolve-group":
+            return core.resolve_review_group(
+                db,
+                args.id,
+                resolution=args.resolution,
+                summary=args.summary,
+                decision=args.decision,
+                actions=args.actions,
+            )
         if args.verb in {"complete", "fail", "needs-review"}:
             state = {"complete": "completed", "fail": "failed"}.get(args.verb, args.verb)
             return core.finish_processor_run(
@@ -619,6 +676,9 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 actions=args.actions,
                 error=getattr(args, "error", None),
                 worker=args.worker,
+                review_key=getattr(args, "review_key", None),
+                review_title=getattr(args, "review_title", None),
+                review_url=getattr(args, "review_url", None),
             )
         return core.list_processor_runs(
             db,

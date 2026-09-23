@@ -60,6 +60,8 @@ class TopologyTest(unittest.TestCase):
                     "processor": "maintenance",
                     "consumer": "chat:claude:session-1",
                     "lease_seconds": 900,
+                    "label": "Maintenance worker",
+                    "url": "claude://resume/session-1",
                 }
             ],
         }
@@ -103,10 +105,13 @@ class TopologyTest(unittest.TestCase):
         self.assertNotIn("chat:claude:session-1", encoded)
         self.assertIn("${PATH_1}", encoded)
         self.assertIn("${CONSUMER_1}", encoded)
+        self.assertNotIn("claude://resume/session-1", encoded)
+        self.assertIn("${URL_1}", encoded)
 
         private = json.dumps(export_topology(self.db, include_local_values=True))
         self.assertIn(str(script), private)
         self.assertIn("chat:claude:session-1", private)
+        self.assertIn("claude://resume/session-1", private)
 
     def test_loader_resolves_variables_and_rejects_missing_values(self) -> None:
         document = json.loads(json.dumps(self.document))

@@ -28,7 +28,8 @@ The first vertical slice provides:
 - consumer-level unreachable and recovery alert episodes through a configurable local command;
 - a dedicated inbound-leads adapter that stores pointers and state, never message bodies;
 - independently executing schedules with descendant-safe timeouts;
-- deterministic timer events, human-review resolution, and space-filtered queue views.
+- deterministic timer events, grouped human-review resolution, and space-filtered queue views;
+- an action-oriented dashboard with worker health, decision groups, queue lanes, and run lifecycles;
 - declarative topology planning and idempotent apply through the CLI;
 - self-diagnosis plus verified online SQLite backups.
 
@@ -135,7 +136,7 @@ switchboard --json route create --space nina-inbound --name "New inbound lead" \
 
 switchboard --json processor bind --space nina-inbound \
   --processor inbound-leads:nina --consumer chat:claude:<claude-cli-session-id> \
-  --activate-inactive
+  --activate-inactive --label "Nina / inbound leads" --url '<verified-local-task-url>'
 switchboard --json processor claim-next \
   --worker chat:claude:<claude-cli-session-id>
 switchboard --json processor complete <processor-run-id> \
@@ -151,24 +152,30 @@ Switchboard wakes a consumer only when it has no in-flight work, while the remai
 durable in the database. `processor claim-next` atomically selects the oldest pending run, accepts
 its delivery, and creates the worker's lease. A consumer can hold only one live run;
 `processor heartbeat` renews it and
-`processor release` safely requeues it. The read-only dashboard shows bindings, delivery attempts,
-consumer availability, backlog age, drain counts, leases, alerts, queue state, concise summary,
-facts, decision, actions, and errors. CLI commands
-remain the only mutation interface.
+`processor release` safely requeues it. The read-only dashboard leads with decision groups,
+failures, worker availability, backlog age, queue lanes, source health, and per-run lifecycles. Raw
+topology remains available in a collapsed technical inventory. CLI commands remain the only
+mutation interface.
 
 Upgrades from a pre-0.8 database automatically coalesce multiple already-accepted wakes for the
 same consumer into one in-flight wake plus a pending backlog. Operators can also run
 `processor delivery-coalesce [--consumer <consumer>]` explicitly; it never drops a processor run.
 
-Human review is an explicit transition rather than an orphaned terminal state:
+Human review is an explicit, durable transition rather than an orphaned terminal state. Give
+related runs the same stable key so one decision can cover the whole group:
 
 ```bash
-switchboard --json processor review-resolve <processor-run-id> \
+switchboard --json processor needs-review <processor-run-id> \
+  --summary "Choose the destination" --review-key task_shared-destination
+switchboard --json processor review-list --state open
+switchboard --json processor review-resolve-group <review-group-id> \
   --resolution retry --decision '{"choice":"approved destination"}'
 ```
 
-Use `--resolution complete` when the decision itself closes the work. `processor list --space
-<space-id>` and the dashboard's space links keep independent queues separate.
+The `review-link` command can regroup an existing `needs-review` run and attach a verified local
+task URL. The pre-0.10 per-run `review-resolve` command remains supported. Use `--resolution
+complete` when the decision itself closes the work. `processor list --space <space-id>` and the
+dashboard's space links keep independent queues separate.
 
 Observe the inbound-leads ledger without duplicating message content:
 

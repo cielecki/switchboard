@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from . import core
 from .db import Database
@@ -14,72 +14,77 @@ HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Switchboard</title>
   <style>
-    :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; }
-    body { margin: 0; background: #0b1020; color: #eef2ff; }
-    main { max-width: 1180px; margin: 0 auto; padding: 40px 24px; }
-    header { display:flex; align-items:end; justify-content:space-between; gap:20px; }
-    h1 { margin:0; font-size:32px; } .muted { color:#9aa6c6; }
-    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin:28px 0; }
-    .card, section { background:#131a2f; border:1px solid #263153; border-radius:14px; padding:16px; }
-    .value { font-size:28px; font-weight:700; margin-top:8px; }
-    section { margin-top:16px; overflow:auto; }
-    table { width:100%; border-collapse:collapse; font-size:14px; }
-    th,td { text-align:left; padding:10px 8px; border-bottom:1px solid #263153; white-space:nowrap; }
-    td.wrap { white-space:normal; min-width:220px; }
-    th { color:#9aa6c6; font-weight:600; } code { color:#b9c8ff; }
+    :root { color-scheme:dark; font-family:Inter,ui-sans-serif,system-ui,sans-serif; }
+    * { box-sizing:border-box; } body { margin:0; background:#090d18; color:#eef2ff; }
+    main { max-width:1240px; margin:auto; padding:32px 22px 64px; }
+    header,.row { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+    h1 { margin:0; font-size:30px; } h2 { margin:0 0 14px; font-size:19px; } h3 { margin:0 0 8px; }
+    a { color:#a8c5ff; } .muted { color:#91a0bf; } .tiny { font-size:12px; }
+    .nav { margin:22px 0; display:flex; flex-wrap:wrap; gap:8px; }
+    .nav a,.pill { padding:7px 11px; border:1px solid #2b385e; border-radius:999px; text-decoration:none; }
+    .nav a.active { background:#27437b; color:white; }
+    .metrics,.lanes { display:grid; grid-template-columns:repeat(auto-fit,minmax(185px,1fr)); gap:12px; }
+    .metric,.card,section,details { background:#11182a; border:1px solid #253251; border-radius:13px; }
+    .metric,.card,section { padding:15px; } section { margin-top:14px; }
+    .metric strong { display:block; font-size:28px; margin-top:5px; }
+    .card { margin-bottom:9px; } .danger { border-color:#8e3e52; } .warning { border-color:#8c6a2b; }
+    .badge { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:#aab8d7; }
+    .summary { margin:8px 0; line-height:1.45; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th,td { padding:9px 7px; border-bottom:1px solid #253251; text-align:left; vertical-align:top; }
+    th { color:#91a0bf; } code { color:#c1d0ff; overflow-wrap:anywhere; }
+    details { margin-top:14px; padding:12px 15px; overflow:auto; } summary { cursor:pointer; font-weight:650; }
+    pre { white-space:pre-wrap; overflow-wrap:anywhere; color:#c1d0ff; }
+    .empty { color:#71809e; margin:8px 0; } .good { color:#7ee2ad; }
+    #run-detail:empty { display:none; }
   </style>
 </head>
 <body><main>
-  <header><div><h1>Switchboard</h1><div class="muted">Read-only operations view</div></div><div id="db" class="muted"></div></header>
-  <div id="counts" class="grid"></div>
-  <section><h2>Supervisor</h2><div id="supervisor"></div></section>
-  <section><h2>Spaces</h2><div id="space-nav"></div><div id="spaces"></div></section>
-  <section><h2>Sources</h2><div id="sources"></div></section>
-  <section><h2>Schedules</h2><div id="schedules"></div></section>
-  <section><h2>Open deliveries</h2><div id="deliveries"></div></section>
-  <section><h2>Processor bindings</h2><div id="bindings"></div></section>
-  <section><h2>Processor consumers</h2><div id="consumers"></div></section>
-  <section><h2>Processor deliveries</h2><div id="processor-deliveries"></div></section>
-  <section><h2>Processor alerts</h2><div id="processor-alerts"></div></section>
-  <section><h2>Processor queue and outcomes</h2><div id="processors"></div></section>
-  <section><h2>Routing table</h2><div id="routes"></div></section>
-  <section><h2>Active waits</h2><div id="waits"></div></section>
-  <section><h2>Adapter runs</h2><div id="adapters"></div></section>
-  <section><h2>Recent events</h2><div id="events"></div></section>
+  <header><div><h1>Switchboard</h1><div class="muted">Durable work intake · read-only</div></div><div id="heartbeat" class="muted tiny"></div></header>
+  <nav id="spaces" class="nav"></nav>
+  <div id="metrics" class="metrics"></div>
+  <section><h2>Needs attention</h2><div id="reviews"></div><div id="trouble"></div></section>
+  <section><h2>Workers</h2><div id="workers"></div></section>
+  <section><h2>Queue</h2><div class="lanes"><div><h3>Waiting</h3><div id="pending"></div></div><div><h3>In progress</h3><div id="running"></div></div><div><h3>Recently completed</h3><div id="completed"></div></div></div></section>
+  <section id="run-detail"></section>
+  <section><h2>Source health</h2><div id="health"></div></section>
+  <details><summary>Technical inventory</summary>
+    <h3>Bindings</h3><div id="bindings"></div><h3>Schedules</h3><div id="schedules"></div>
+    <h3>Routes</h3><div id="routes"></div><h3>Recent events</h3><div id="events"></div>
+  </details>
 </main><script>
-const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function table(rows, cols) {
-  if (!rows.length) return '<p class="muted">None</p>';
-  return '<table><thead><tr>'+cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+
-    rows.map(r=>'<tr>'+cols.map(c=>'<td><code>'+esc(typeof r[c]==='object'?JSON.stringify(r[c]):r[c])+'</code></td>').join('')+'</tr>').join('')+'</tbody></table>';
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=v=>v?new Date(v).toLocaleString():'';
+const params=new URLSearchParams(location.search), selected=params.get('space'), selectedRun=params.get('run');
+const scoped=rows=>selected?rows.filter(r=>r.space_id===selected||r.config?.space_id===selected):rows;
+function link(url,label){return url&&/^(https?|claude|codex):/i.test(url)?`<a href="${esc(url)}">${esc(label)}</a>`:esc(label)}
+function table(rows,cols){if(!rows.length)return '<p class="empty">None</p>';return '<table><thead><tr>'+cols.map(c=>`<th>${esc(c)}</th>`).join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(c=>`<td><code>${esc(typeof r[c]==='object'?JSON.stringify(r[c]):r[c])}</code></td>`).join('')+'</tr>').join('')+'</tbody></table>'}
+function runCard(r){return `<div class="card ${r.state==='failed'?'danger':''}"><div class="row"><span class="badge">${esc(r.processor)} · ${esc(r.state)}</span><span class="tiny muted">${fmt(r.updated_at)}</span></div><div class="summary">${esc(r.summary||r.id)}</div><a href="?${selected?'space='+encodeURIComponent(selected)+'&':''}run=${encodeURIComponent(r.id)}">Lifecycle</a></div>`}
+function reviewCard(r){return `<div class="card warning"><div class="row"><span class="badge">${esc(r.space_id)} · ${r.open_run_count} item${r.open_run_count===1?'':'s'}</span><span class="tiny muted">${fmt(r.updated_at)}</span></div><div class="summary"><strong>${esc(r.title)}</strong><br>${esc(r.summary)}</div>${link(r.url,r.url?'Open decision chat':'No linked chat')}<div class="tiny muted">Resolve via CLI · <code>${esc(r.id)}</code></div></div>`}
+async function get(url){const r=await fetch(url);if(!r.ok)throw new Error((await r.json()).error||r.statusText);return r.json()}
+async function load(){
+  const urls=['/api/status','/api/spaces','/api/sources','/api/schedules','/api/processor-bindings','/api/processor-consumers','/api/processor-deliveries','/api/processor-alerts','/api/processors?limit=100','/api/reviews?state=open','/api/routes','/api/events'];
+  const [status,spaces,sources,schedules,bindings,consumers,deliveries,alerts,runs,reviews,routes,events]=await Promise.all(urls.map(get));
+  document.querySelector('#spaces').innerHTML=[`<a class="${!selected?'active':''}" href="/">All spaces</a>`,...spaces.map(s=>`<a class="${selected===s.id?'active':''}" href="/?space=${encodeURIComponent(s.id)}">${esc(s.name)}</a>`)].join('');
+  const sr=scoped(runs), sd=scoped(deliveries), sb=scoped(bindings), ss=scoped(schedules), sv=scoped(reviews), sa=scoped(alerts);
+  const open=sr.filter(r=>['pending','running','needs-review','failed'].includes(r.state));
+  document.querySelector('#metrics').innerHTML=[['Open work',open.length],['Decisions',sv.length],['Pending wakes',sd.filter(d=>d.state==='pending').length],['Open alerts',sa.filter(a=>a.state==='open').length]].map(([k,v])=>`<div class="metric"><span class="muted">${k}</span><strong>${v}</strong></div>`).join('');
+  document.querySelector('#heartbeat').textContent=status.supervisor?`Supervisor ${status.supervisor.state} · ${fmt(status.supervisor.heartbeat_at)}`:'Supervisor not started';
+  document.querySelector('#reviews').innerHTML=sv.map(reviewCard).join('')||'<p class="empty good">No decisions waiting.</p>';
+  const failures=sr.filter(r=>r.state==='failed'), openAlerts=sa.filter(a=>a.state==='open');
+  document.querySelector('#trouble').innerHTML=[...failures.map(runCard),...openAlerts.map(a=>`<div class="card danger"><strong>Delivery unreachable</strong><div>${esc(a.detail)}</div><code>${esc(a.delivery_id)}</code></div>`)].join('');
+  document.querySelector('#workers').innerHTML=table(consumers.filter(c=>!selected||sb.some(b=>b.consumer===c.consumer)),['label','status','backlog','active_runs','accepted_wakes','completed_last_hour','oldest_pending_at']);
+  document.querySelector('#pending').innerHTML=sr.filter(r=>r.state==='pending').slice(0,12).map(runCard).join('')||'<p class="empty">Empty</p>';
+  document.querySelector('#running').innerHTML=sr.filter(r=>r.state==='running').slice(0,12).map(runCard).join('')||'<p class="empty">Empty</p>';
+  document.querySelector('#completed').innerHTML=sr.filter(r=>r.state==='completed').slice(0,8).map(runCard).join('')||'<p class="empty">None yet</p>';
+  document.querySelector('#health').innerHTML=table(scoped(sources).map(s=>({...s,health_state:s.health?.state,health_at:s.health?.observed_at,health_detail:s.health?.detail})),['id','kind','state','health_state','health_at','health_detail']);
+  document.querySelector('#bindings').innerHTML=table(sb,['label','space_id','processor','state','consumer','lease_seconds','url']);
+  document.querySelector('#schedules').innerHTML=table(ss,['id','adapter','enabled','every_seconds','next_run_at','last_state','last_error']);
+  document.querySelector('#routes').innerHTML=table(scoped(routes),['priority','state','name','space_id','predicate','target']);
+  document.querySelector('#events').innerHTML=table(scoped(events),['id','space_id','source_id','event_type','external_id','observed_at']);
+  if(selectedRun){const r=await get('/api/processors/'+encodeURIComponent(selectedRun));const lifecycle=[{stage:'event observed',at:r.event?.observed_at,detail:r.event?.event_type},{stage:'run queued',at:r.created_at,detail:r.id},...(r.delivery?[{stage:'wake created',at:r.delivery.created_at,detail:r.delivery.state},{stage:'wake accepted',at:r.delivery.accepted_at,detail:r.delivery.consumer},{stage:'wake acknowledged',at:r.delivery.acknowledged_at,detail:''}]:[]),...r.attempts.map(a=>({stage:'worker '+a.state,at:a.started_at,detail:a.worker+' · '+(a.detail||'')})),{stage:r.state,at:r.completed_at||r.updated_at,detail:r.summary}].filter(x=>x.at);document.querySelector('#run-detail').innerHTML=`<h2>Run lifecycle</h2>${table(lifecycle,['stage','at','detail'])}<pre>${esc(JSON.stringify({facts:r.facts,decision:r.decision,actions:r.actions,error:r.error},null,2))}</pre>`}
 }
-function richTable(rows, cols, wrap=[]) {
-  if (!rows.length) return '<p class="muted">None</p>';
-  return '<table><thead><tr>'+cols.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(c=>'<td class="'+(wrap.includes(c)?'wrap':'')+'"><code>'+esc(typeof r[c]==='object'?JSON.stringify(r[c]):r[c])+'</code></td>').join('')+'</tr>').join('')+'</tbody></table>';
-}
-async function load() {
-  const [status, spaces, sources, schedules, deliveries, bindings, consumers, processorDeliveries, processorAlerts, processors, routes, waits, adapters, events] = await Promise.all(['/api/status','/api/spaces','/api/sources','/api/schedules','/api/deliveries','/api/processor-bindings','/api/processor-consumers','/api/processor-deliveries','/api/processor-alerts','/api/processors','/api/routes','/api/waits','/api/adapters','/api/events'].map(u=>fetch(u).then(r=>r.json())));
-  document.querySelector('#db').textContent = status.database;
-  const selectedSpace = new URLSearchParams(location.search).get('space');
-  const scoped = rows => selectedSpace ? rows.filter(row => row.space_id === selectedSpace || row.config?.space_id === selectedSpace) : rows;
-  document.querySelector('#space-nav').innerHTML = ['<a href="/">All spaces</a>', ...spaces.map(space => `<a href="/?space=${encodeURIComponent(space.id)}">${esc(space.name)}</a>`)].join(' &middot; ');
-  document.querySelector('#counts').innerHTML = Object.entries(status.counts).map(([k,v])=>`<div class="card"><div class="muted">${esc(k.replaceAll('_',' '))}</div><div class="value">${v}</div></div>`).join('');
-  document.querySelector('#supervisor').innerHTML = status.supervisor ? table([status.supervisor], ['state','pid','heartbeat_at','last_cycle_at','dispatch_enabled','web_url','last_error']) : '<p class="muted">Never started</p>';
-  document.querySelector('#spaces').innerHTML = table(spaces, ['id','name','created_at']);
-  document.querySelector('#sources').innerHTML = richTable(scoped(sources), ['id','space_id','kind','state','config','created_at'], ['config']);
-  document.querySelector('#schedules').innerHTML = table(scoped(schedules), ['id','adapter','enabled','every_seconds','next_run_at','last_state','last_error']);
-  document.querySelector('#deliveries').innerHTML = table(deliveries.filter(x=>['pending','accepted'].includes(x.state)), ['id','state','consumer','event_id','created_at']);
-  document.querySelector('#bindings').innerHTML = table(scoped(bindings), ['state','space_id','processor','consumer','lease_seconds','activate_inactive','updated_at']);
-  document.querySelector('#consumers').innerHTML = table(consumers, ['consumer','status','backlog','oldest_pending_at','active_runs','accepted_wakes','completed_last_hour','completed_last_day']);
-  document.querySelector('#processor-deliveries').innerHTML = table(scoped(processorDeliveries).filter(x=>['pending','accepted'].includes(x.state)), ['id','state','space_id','processor','consumer','processor_run_id','generation','created_at','last_error']);
-  document.querySelector('#processor-alerts').innerHTML = table(processorAlerts.filter(x=>x.state==='open'), ['state','delivery_id','generation','detail','opened_at']);
-  document.querySelector('#processors').innerHTML = richTable(scoped(processors), ['id','space_id','state','processor','summary','facts','decision','actions','updated_at'], ['summary','facts','decision','actions']);
-  document.querySelector('#routes').innerHTML = richTable(scoped(routes), ['priority','state','name','space_id','predicate','target'], ['predicate','target']);
-  document.querySelector('#waits').innerHTML = table(waits.filter(x=>x.state==='active'), ['id','consumer','purpose','predicate','created_at']);
-  document.querySelector('#adapters').innerHTML = table(adapters, ['id','adapter','state','discovered_sources','emitted_events','deduplicated_events','started_at']);
-  document.querySelector('#events').innerHTML = table(scoped(events), ['id','space_id','source_id','event_type','external_id','observed_at']);
-}
-load(); setInterval(load, 5000);
+load().catch(e=>document.querySelector('#trouble').innerHTML=`<div class="card danger">${esc(e.message)}</div>`);setInterval(load,5000);
 </script></body></html>"""
 
 
@@ -95,7 +100,9 @@ def handler_for(db: Database) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def do_GET(self) -> None:
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
+            query = parse_qs(parsed.query)
             try:
                 if path == "/":
                     body = HTML.encode()
@@ -104,6 +111,9 @@ def handler_for(db: Database) -> type[BaseHTTPRequestHandler]:
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
+                    return
+                if path.startswith("/api/processors/"):
+                    self.send_json(core.get_processor_run(db, path.rsplit("/", 1)[1]))
                     return
                 endpoints = {
                     "/api/status": lambda: core.status(db),
@@ -114,7 +124,16 @@ def handler_for(db: Database) -> type[BaseHTTPRequestHandler]:
                     "/api/processor-consumers": lambda: core.list_processor_consumers(db),
                     "/api/processor-deliveries": lambda: core.list_processor_deliveries(db),
                     "/api/processor-alerts": lambda: core.list_processor_alerts(db),
-                    "/api/processors": lambda: core.list_processor_runs(db),
+                    "/api/processors": lambda: core.list_processor_runs(
+                        db,
+                        space_id=query.get("space", [None])[0],
+                        limit=int(query.get("limit", ["100"])[0]),
+                    ),
+                    "/api/reviews": lambda: core.list_review_groups(
+                        db,
+                        space_id=query.get("space", [None])[0],
+                        state=query.get("state", [None])[0],
+                    ),
                     "/api/routes": lambda: core.list_routes(db),
                     "/api/sources": lambda: core.list_sources(db),
                     "/api/spaces": lambda: core.list_spaces(db),
@@ -125,6 +144,8 @@ def handler_for(db: Database) -> type[BaseHTTPRequestHandler]:
                     self.send_json(endpoints[path]())
                     return
                 self.send_json({"error": "not found"}, status=404)
+            except (ValueError, TypeError) as exc:
+                self.send_json({"error": str(exc)}, status=400)
             except Exception as exc:  # noqa: BLE001  # pragma: no cover - final HTTP boundary
                 self.send_json({"error": str(exc)}, status=500)
 

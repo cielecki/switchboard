@@ -10,6 +10,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .db import SCHEMA_VERSION, Database, decode_json_fields
 
@@ -1082,6 +1083,97 @@ def _decode_processor_run(row: dict[str, Any]) -> dict[str, Any]:
     return decode_json_fields(row, "facts_json", "decision_json", "actions_json")
 
 
+def _normalized_review_key(value: Any, run_id: str) -> str:
+    if isinstance(value, str) and value.strip():
+        cleaned = value.strip()
+        if cleaned.startswith(("local_", "task_")) or (
+            len(cleaned) > 8 and cleaned[8:9] == "-"
+        ):
+            return cleaned.split()[0]
+        return cleaned
+    return f"run:{run_id}"
+
+
+def _review_identity(space_id: str, review_key: str) -> str:
+    digest = hashlib.sha256(f"{space_id}\0{review_key}".encode()).hexdigest()[:16]
+    return f"review_{digest}"
+
+
+def _optional_dashboard_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https", "claude", "codex"}:
+        raise ValueError("dashboard URL must use http, https, claude, or codex")
+    return value
+
+
+def _ensure_review_group(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    space_id: str,
+    review_key: str | None,
+    title: str | None,
+    summary: str,
+    url: str | None,
+    timestamp: str,
+) -> str:
+    key = _normalized_review_key(review_key, run_id)
+    review_id = _review_identity(space_id, key)
+    clean_title = (title or summary or key).split(".", 1)[0].strip()[:180] or key
+    connection.execute(
+        "INSERT INTO review_groups(id, space_id, review_key, title, summary, url, state, "
+        "created_at, updated_at) VALUES(?,?,?,?,?,?,'open',?,?) "
+        "ON CONFLICT(space_id, review_key) DO UPDATE SET "
+        "title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE review_groups.title END, "
+        "summary=CASE WHEN excluded.summary<>'' THEN excluded.summary ELSE review_groups.summary END, "
+        "url=COALESCE(excluded.url, review_groups.url), state='open', resolution_json='{}', "
+        "updated_at=excluded.updated_at, resolved_at=NULL",
+        (
+            review_id,
+            space_id,
+            key,
+            clean_title,
+            summary,
+            _optional_dashboard_url(url),
+            timestamp,
+            timestamp,
+        ),
+    )
+    actual = connection.execute(
+        "SELECT id FROM review_groups WHERE space_id=? AND review_key=?", (space_id, key)
+    ).fetchone()["id"]
+    connection.execute(
+        "INSERT INTO processor_review_links(review_id, processor_run_id, created_at) "
+        "VALUES(?,?,?) ON CONFLICT(processor_run_id) DO UPDATE SET review_id=excluded.review_id",
+        (actual, run_id, timestamp),
+    )
+    return actual
+
+
+def _close_review_group_if_finished(
+    connection: sqlite3.Connection, run_id: str, timestamp: str
+) -> None:
+    link = connection.execute(
+        "SELECT review_id FROM processor_review_links WHERE processor_run_id=?", (run_id,)
+    ).fetchone()
+    if link is None:
+        return
+    remaining = connection.execute(
+        "SELECT count(*) FROM processor_review_links prl "
+        "JOIN processor_runs pr ON pr.id=prl.processor_run_id "
+        "WHERE prl.review_id=? AND pr.state='needs-review'",
+        (link["review_id"],),
+    ).fetchone()[0]
+    if not remaining:
+        connection.execute(
+            "UPDATE review_groups SET state='resolved', resolved_at=COALESCE(resolved_at, ?), "
+            "updated_at=? WHERE id=?",
+            (timestamp, timestamp, link["review_id"]),
+        )
+
+
 def _ensure_processor_delivery(
     connection: sqlite3.Connection,
     run_id: str,
@@ -1117,12 +1209,15 @@ def bind_processor(
     consumer: str,
     activate_inactive: bool = False,
     lease_seconds: int = 1800,
+    label: str | None = None,
+    url: str | None = None,
 ) -> dict[str, Any]:
     if not processor.strip():
         raise ValueError("processor cannot be empty")
     _chat_consumer(consumer)
     if lease_seconds < 1:
         raise ValueError("lease must be at least one second")
+    url = _optional_dashboard_url(url)
     db.initialize()
     timestamp = now()
     with db.transaction() as connection:
@@ -1136,11 +1231,12 @@ def bind_processor(
         created_at = existing["created_at"] if existing else timestamp
         connection.execute(
             "INSERT INTO processor_bindings(id, space_id, processor, consumer, state, "
-            "activate_inactive, lease_seconds, created_at, updated_at) "
-            "VALUES(?,?,?,?,'enabled',?,?,?,?) "
+            "activate_inactive, lease_seconds, label, url, created_at, updated_at) "
+            "VALUES(?,?,?,?,'enabled',?,?,?,?,?,?) "
             "ON CONFLICT(space_id, processor) DO UPDATE SET consumer=excluded.consumer, "
             "state='enabled', activate_inactive=excluded.activate_inactive, "
-            "lease_seconds=excluded.lease_seconds, updated_at=excluded.updated_at",
+            "lease_seconds=excluded.lease_seconds, label=excluded.label, url=excluded.url, "
+            "updated_at=excluded.updated_at",
             (
                 binding_id,
                 space_id,
@@ -1148,6 +1244,8 @@ def bind_processor(
                 consumer,
                 int(activate_inactive),
                 lease_seconds,
+                label,
+                url,
                 created_at,
                 timestamp,
             ),
@@ -1185,6 +1283,8 @@ def bind_processor(
                 "consumer": consumer,
                 "activate_inactive": activate_inactive,
                 "lease_seconds": lease_seconds,
+                "label": label,
+                "url": url,
                 "backfilled_deliveries": deliveries,
             },
         )
@@ -1375,6 +1475,7 @@ def list_processor_runs(
     processor: str | None = None,
     event_id: str | None = None,
     space_id: str | None = None,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     filters: list[str] = []
     params: list[Any] = []
@@ -1392,6 +1493,11 @@ def list_processor_runs(
     if filters:
         query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY pr.created_at DESC"
+    if limit is not None:
+        if limit < 1:
+            raise ValueError("processor run limit must be positive")
+        query += " LIMIT ?"
+        params.append(limit)
     return [_decode_processor_run(row) for row in db.rows(query, tuple(params))]
 
 
@@ -1730,6 +1836,9 @@ def finish_processor_run(
     actions: list[Any] | None = None,
     error: str | None = None,
     worker: str | None = None,
+    review_key: str | None = None,
+    review_title: str | None = None,
+    review_url: str | None = None,
 ) -> dict[str, Any]:
     if state not in {"completed", "failed", "needs-review"}:
         raise ValueError("processor terminal state must be completed, failed, or needs-review")
@@ -1741,7 +1850,8 @@ def finish_processor_run(
     completed_at = timestamp if state == "completed" else None
     with db.transaction() as connection:
         current = connection.execute(
-            "SELECT decision_json FROM processor_runs WHERE id=?", (run_id,)
+            "SELECT pr.decision_json, e.space_id FROM processor_runs pr "
+            "JOIN events e ON e.id=pr.event_id WHERE pr.id=?", (run_id,)
         ).fetchone()
         decision_payload = dict(decision or {})
         if current is not None:
@@ -1784,6 +1894,25 @@ def finish_processor_run(
             "last_error=NULL WHERE processor_run_id=? AND state IN ('pending','accepted')",
             (timestamp, run_id),
         )
+        review_id = None
+        if state == "needs-review":
+            facts_payload = facts or {}
+            review_id = _ensure_review_group(
+                connection,
+                run_id=run_id,
+                space_id=current["space_id"],
+                review_key=review_key
+                or facts_payload.get("shared_decision_task")
+                or decision_payload.get("shared_decision_task")
+                or decision_payload.get("decision_task")
+                or facts_payload.get("decision_task"),
+                title=review_title or decision_payload.get("review_title"),
+                summary=summary,
+                url=review_url
+                or decision_payload.get("review_url")
+                or facts_payload.get("review_url"),
+                timestamp=timestamp,
+            )
         audit(
             connection,
             command=f"processor.{state}",
@@ -1796,6 +1925,7 @@ def finish_processor_run(
                 "decision": decision_payload,
                 "actions": actions or [],
                 "error": error,
+                "review_id": review_id,
             },
         )
     return get_processor_run(db, run_id)
@@ -1845,6 +1975,7 @@ def resolve_processor_review(
         )
         if resolution == "retry":
             _requeue_processor_delivery(connection, run_id)
+        _close_review_group_if_finished(connection, run_id, timestamp)
         audit(
             connection,
             command="processor.review-resolve",
@@ -1860,6 +1991,162 @@ def resolve_processor_review(
     return get_processor_run(db, run_id)
 
 
+def link_processor_review(
+    db: Database,
+    run_id: str,
+    *,
+    review_key: str,
+    title: str | None = None,
+    summary: str | None = None,
+    url: str | None = None,
+) -> dict[str, Any]:
+    timestamp = now()
+    with db.transaction() as connection:
+        run = connection.execute(
+            "SELECT pr.summary, pr.state, e.space_id FROM processor_runs pr "
+            "JOIN events e ON e.id=pr.event_id WHERE pr.id=?",
+            (run_id,),
+        ).fetchone()
+        if run is None:
+            raise ValueError(f"processor run not found: {run_id}")
+        if run["state"] != "needs-review":
+            raise ValueError(f"processor run is not awaiting review: {run_id}")
+        review_id = _ensure_review_group(
+            connection,
+            run_id=run_id,
+            space_id=run["space_id"],
+            review_key=review_key,
+            title=title,
+            summary=summary if summary is not None else run["summary"],
+            url=url,
+            timestamp=timestamp,
+        )
+        audit(
+            connection,
+            command="processor.review-link",
+            entity_type="review_group",
+            entity_id=review_id,
+            payload={"processor_run_id": run_id, "review_key": review_key},
+        )
+    return get_review_group(db, review_id)
+
+
+def list_review_groups(
+    db: Database, *, space_id: str | None = None, state: str | None = None
+) -> list[dict[str, Any]]:
+    filters: list[str] = []
+    params: list[Any] = []
+    if space_id:
+        filters.append("rg.space_id=?")
+        params.append(space_id)
+    if state:
+        if state not in {"open", "resolved"}:
+            raise ValueError("review state must be open or resolved")
+        filters.append("rg.state=?")
+        params.append(state)
+    query = (
+        "SELECT rg.*, count(prl.processor_run_id) AS run_count, "
+        "sum(CASE WHEN pr.state='needs-review' THEN 1 ELSE 0 END) AS open_run_count "
+        "FROM review_groups rg "
+        "LEFT JOIN processor_review_links prl ON prl.review_id=rg.id "
+        "LEFT JOIN processor_runs pr ON pr.id=prl.processor_run_id"
+    )
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " GROUP BY rg.id ORDER BY rg.updated_at DESC, rg.id"
+    return [decode_json_fields(row, "resolution_json") for row in db.rows(query, tuple(params))]
+
+
+def get_review_group(db: Database, review_id: str) -> dict[str, Any]:
+    row = db.row("SELECT * FROM review_groups WHERE id=?", (review_id,))
+    if row is None:
+        raise ValueError(f"review group not found: {review_id}")
+    result = decode_json_fields(row, "resolution_json")
+    result["runs"] = [
+        _decode_processor_run(run)
+        for run in db.rows(
+            "SELECT pr.*, e.space_id FROM processor_review_links prl "
+            "JOIN processor_runs pr ON pr.id=prl.processor_run_id "
+            "JOIN events e ON e.id=pr.event_id WHERE prl.review_id=? "
+            "ORDER BY pr.created_at, pr.id",
+            (review_id,),
+        )
+    ]
+    return result
+
+
+def resolve_review_group(
+    db: Database,
+    review_id: str,
+    *,
+    resolution: str,
+    summary: str = "",
+    decision: dict[str, Any] | None = None,
+    actions: list[Any] | None = None,
+) -> dict[str, Any]:
+    if resolution not in {"complete", "retry"}:
+        raise ValueError("review resolution must be complete or retry")
+    timestamp = now()
+    with db.transaction() as connection:
+        group = connection.execute(
+            "SELECT * FROM review_groups WHERE id=? AND state='open'", (review_id,)
+        ).fetchone()
+        if group is None:
+            raise ValueError(f"open review group not found: {review_id}")
+        runs = connection.execute(
+            "SELECT pr.* FROM processor_review_links prl "
+            "JOIN processor_runs pr ON pr.id=prl.processor_run_id "
+            "WHERE prl.review_id=? AND pr.state='needs-review'",
+            (review_id,),
+        ).fetchall()
+        for run in runs:
+            previous_decision = json.loads(run["decision_json"])
+            previous_actions = json.loads(run["actions_json"])
+            previous_decision["review"] = {
+                "resolved_at": timestamp,
+                "resolution": resolution,
+                "review_group_id": review_id,
+                **(decision or {}),
+            }
+            previous_actions.extend(actions or [])
+            next_state = "completed" if resolution == "complete" else "pending"
+            connection.execute(
+                "UPDATE processor_runs SET state=?, summary=?, decision_json=?, actions_json=?, "
+                "error=NULL, completed_at=?, updated_at=? WHERE id=?",
+                (
+                    next_state,
+                    summary or run["summary"],
+                    json.dumps(previous_decision, sort_keys=True),
+                    json.dumps(previous_actions, sort_keys=True),
+                    timestamp if next_state == "completed" else None,
+                    timestamp,
+                    run["id"],
+                ),
+            )
+            if resolution == "retry":
+                _requeue_processor_delivery(connection, run["id"])
+        resolution_payload = {
+            "resolution": resolution,
+            "summary": summary,
+            "decision": decision or {},
+            "actions": actions or [],
+            "affected_runs": len(runs),
+        }
+        connection.execute(
+            "UPDATE review_groups SET state='resolved', resolution_json=?, resolved_at=?, "
+            "updated_at=? WHERE id=?",
+            (json.dumps(resolution_payload, sort_keys=True), timestamp, timestamp, review_id),
+        )
+        audit(
+            connection,
+            command="processor.review-group-resolve",
+            entity_type="review_group",
+            entity_id=review_id,
+            payload=resolution_payload,
+        )
+    return get_review_group(db, review_id)
+
+
 def retry_processor_run(db: Database, run_id: str) -> dict[str, Any]:
     timestamp = now()
     with db.transaction() as connection:
@@ -1871,6 +2158,7 @@ def retry_processor_run(db: Database, run_id: str) -> dict[str, Any]:
         if not changed:
             raise ValueError(f"failed or needs-review processor run not found: {run_id}")
         _requeue_processor_delivery(connection, run_id)
+        _close_review_group_if_finished(connection, run_id, timestamp)
         audit(
             connection,
             command="processor.retry",
@@ -1989,7 +2277,8 @@ def list_processor_consumers(db: Database) -> list[dict[str, Any]]:
     hour_ago = (parsed - timedelta(hours=1)).isoformat()
     day_ago = (parsed - timedelta(days=1)).isoformat()
     rows = db.rows(
-        "SELECT pb.consumer, count(DISTINCT pb.id) AS bindings, "
+        "SELECT pb.consumer, MAX(pb.label) AS label, MAX(pb.url) AS url, "
+        "count(DISTINCT pb.id) AS bindings, "
         "sum(CASE WHEN pr.state='pending' THEN 1 ELSE 0 END) AS backlog, "
         "min(CASE WHEN pr.state='pending' THEN pr.created_at END) AS oldest_pending_at, "
         "sum(CASE WHEN pa.state='running' AND pa.lease_expires_at>? THEN 1 ELSE 0 END) AS active_runs, "
@@ -2013,12 +2302,17 @@ def list_processor_consumers(db: Database) -> list[dict[str, Any]]:
 
 
 def list_processor_alerts(db: Database, state: str | None = None) -> list[dict[str, Any]]:
-    query = "SELECT * FROM processor_alerts"
+    query = (
+        "SELECT pa.*, e.space_id, pr.processor FROM processor_alerts pa "
+        "JOIN processor_deliveries pd ON pd.id=pa.delivery_id "
+        "JOIN processor_runs pr ON pr.id=pd.processor_run_id "
+        "JOIN events e ON e.id=pr.event_id"
+    )
     params: tuple[Any, ...] = ()
     if state:
-        query += " WHERE state=?"
+        query += " WHERE pa.state=?"
         params = (state,)
-    query += " ORDER BY opened_at DESC"
+    query += " ORDER BY pa.opened_at DESC"
     return db.rows(query, params)
 
 
@@ -2341,6 +2635,7 @@ def status(db: Database) -> dict[str, Any]:
             "routes",
             "processor_runs",
             "processor_bindings",
+            "review_groups",
             "processor_deliveries",
             "processor_attempts",
             "processor_alerts",
@@ -2363,6 +2658,9 @@ def status(db: Database) -> dict[str, Any]:
         ).fetchone()[0]
         counts["open_processor_alerts"] = connection.execute(
             "SELECT count(*) FROM processor_alerts WHERE state='open'"
+        ).fetchone()[0]
+        counts["open_review_groups"] = connection.execute(
+            "SELECT count(*) FROM review_groups WHERE state='open'"
         ).fetchone()[0]
         counts["pending_processor_deliveries"] = connection.execute(
             "SELECT count(*) FROM processor_deliveries WHERE state='pending'"

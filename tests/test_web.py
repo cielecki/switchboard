@@ -37,8 +37,9 @@ class WebTest(unittest.TestCase):
     def test_adapter_runs_are_visible_and_web_mutation_is_rejected(self) -> None:
         with urllib.request.urlopen(self.base_url) as response:
             html = response.read().decode()
-        self.assertIn('<h2>Spaces</h2>', html)
-        self.assertIn('<h2>Sources</h2>', html)
+        self.assertIn('<h2>Needs attention</h2>', html)
+        self.assertIn('<h2>Source health</h2>', html)
+        self.assertIn('<summary>Technical inventory</summary>', html)
 
         with urllib.request.urlopen(f"{self.base_url}/api/spaces") as response:
             spaces = json.load(response)
@@ -63,6 +64,10 @@ class WebTest(unittest.TestCase):
         with urllib.request.urlopen(f"{self.base_url}/api/processors") as response:
             processors = json.load(response)
         self.assertEqual(processors, [])
+
+        with urllib.request.urlopen(f"{self.base_url}/api/reviews?state=open") as response:
+            reviews = json.load(response)
+        self.assertEqual(reviews, [])
 
         with urllib.request.urlopen(f"{self.base_url}/api/processor-bindings") as response:
             bindings = json.load(response)

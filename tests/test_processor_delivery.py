@@ -45,6 +45,8 @@ class ProcessorDeliveryTest(unittest.TestCase):
             consumer="chat:claude:session-1",
             activate_inactive=True,
             lease_seconds=120,
+            label="Inbox worker",
+            url="claude://resume/session-1",
         )
         second = self.emit("message-2")
 
@@ -53,6 +55,49 @@ class ProcessorDeliveryTest(unittest.TestCase):
         self.assertEqual({item["processor_run_id"] for item in deliveries}, {first, second})
         self.assertTrue(binding["activate_inactive"])
         self.assertEqual(binding["lease_seconds"], 120)
+        self.assertEqual(binding["label"], "Inbox worker")
+        self.assertEqual(binding["url"], "claude://resume/session-1")
+
+    def test_shared_review_group_resolves_all_linked_runs(self) -> None:
+        worker = "chat:claude:session-1"
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer=worker,
+        )
+        run_ids = [self.emit("message-1"), self.emit("message-2")]
+        for run_id in run_ids:
+            core.claim_processor_run(self.db, run_id, worker=worker)
+            core.finish_processor_run(
+                self.db,
+                run_id,
+                state="needs-review",
+                worker=worker,
+                summary="Choose one policy",
+                review_key="task_shared-policy",
+                review_title="Choose routing policy",
+                review_url="claude://resume/decision",
+            )
+
+        groups = core.list_review_groups(self.db, state="open")
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["run_count"], 2)
+        self.assertEqual(groups[0]["open_run_count"], 2)
+        resolved = core.resolve_review_group(
+            self.db,
+            groups[0]["id"],
+            resolution="retry",
+            decision={"choice": "route-a"},
+        )
+
+        self.assertEqual(resolved["state"], "resolved")
+        self.assertEqual(resolved["resolution"]["affected_runs"], 2)
+        for run_id in run_ids:
+            run = core.get_processor_run(self.db, run_id)
+            self.assertEqual(run["state"], "pending")
+            self.assertEqual(run["delivery"]["state"], "pending")
+            self.assertEqual(run["decision"]["review"]["choice"], "route-a")
 
     def test_claim_release_and_expiry_requeue_with_new_generation(self) -> None:
         core.bind_processor(

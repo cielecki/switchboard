@@ -9,6 +9,49 @@ from switchboard.db import SCHEMA_VERSION, Database
 
 
 class MigrationTest(unittest.TestCase):
+    def test_v7_review_backfill_groups_shared_decision_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "switchboard.sqlite3"
+            db = Database(path)
+            db.initialize()
+            with sqlite3.connect(path) as connection:
+                timestamp = "2026-09-23T10:00:00+00:00"
+                connection.execute("INSERT INTO spaces VALUES(?,?,?)", ("demo", "Demo", timestamp))
+                connection.execute(
+                    "INSERT INTO sources(id,space_id,kind,created_at) VALUES(?,?,?,?)",
+                    ("mail", "demo", "mail", timestamp),
+                )
+                connection.execute(
+                    "INSERT INTO events(id,space_id,source_id,external_id,event_type,observed_at,attributes_json) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    ("event-1", "demo", "mail", "external-1", "mail", timestamp, "{}"),
+                )
+                connection.execute(
+                    "INSERT INTO routes(id,space_id,name,predicate_json,target_json,state,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,'enabled',?,?)",
+                    ("route-1", "demo", "Route", "{}", '{"processor":"triage"}', timestamp, timestamp),
+                )
+                for index in (1, 2):
+                    connection.execute(
+                        "INSERT INTO processor_runs(id,event_id,route_id,processor,idempotency_key,state,summary,facts_json,decision_json,actions_json,created_at,updated_at) "
+                        "VALUES(?,?,?,?,?,'needs-review',?,?,?,?,?,?)",
+                        (
+                            f"run-{index}", "event-1", "route-1", "triage", f"key-{index}",
+                            "One shared choice", '{"shared_decision_task":"task_shared choice"}',
+                            "{}", "[]", timestamp, timestamp,
+                        ),
+                    )
+                connection.execute("DROP TABLE processor_review_links")
+                connection.execute("DROP TABLE review_groups")
+                connection.execute("UPDATE schema_meta SET value='7' WHERE key='schema_version'")
+
+            Database(path).initialize()
+            groups = Database(path).rows("SELECT * FROM review_groups")
+            links = Database(path).rows("SELECT * FROM processor_review_links")
+            self.assertEqual(len(groups), 1)
+            self.assertEqual(groups[0]["review_key"], "task_shared")
+            self.assertEqual(len(links), 2)
+
     def test_v1_delivery_table_migrates_to_accepted_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "switchboard.sqlite3"

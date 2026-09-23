@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-switchboard"
-version = "0.9.1"
+version = "0.10.0"
 description = "CLI-managed routing tables, processor outcomes, and durable waits for AI agents."
 readme = "README.md"
 license = "MIT"

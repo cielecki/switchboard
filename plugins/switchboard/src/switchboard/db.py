@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -9,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -115,9 +116,33 @@ CREATE TABLE IF NOT EXISTS processor_bindings (
     state TEXT NOT NULL CHECK(state IN ('enabled', 'disabled')),
     activate_inactive INTEGER NOT NULL DEFAULT 0 CHECK(activate_inactive IN (0, 1)),
     lease_seconds INTEGER NOT NULL DEFAULT 1800 CHECK(lease_seconds > 0),
+    label TEXT,
+    url TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(space_id, processor)
+);
+
+CREATE TABLE IF NOT EXISTS review_groups (
+    id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    review_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    url TEXT,
+    state TEXT NOT NULL CHECK(state IN ('open', 'resolved')),
+    resolution_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT,
+    UNIQUE(space_id, review_key)
+);
+
+CREATE TABLE IF NOT EXISTS processor_review_links (
+    review_id TEXT NOT NULL REFERENCES review_groups(id),
+    processor_run_id TEXT NOT NULL UNIQUE REFERENCES processor_runs(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(review_id, processor_run_id)
 );
 
 CREATE TABLE IF NOT EXISTS processor_deliveries (
@@ -275,6 +300,8 @@ CREATE INDEX IF NOT EXISTS idx_routes_order ON routes(space_id, state, priority,
 CREATE INDEX IF NOT EXISTS idx_processor_runs_state ON processor_runs(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_processor_runs_event ON processor_runs(event_id);
 CREATE INDEX IF NOT EXISTS idx_processor_bindings_lookup ON processor_bindings(space_id, processor, state);
+CREATE INDEX IF NOT EXISTS idx_review_groups_state ON review_groups(state, space_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_processor_review_links_review ON processor_review_links(review_id);
 CREATE INDEX IF NOT EXISTS idx_processor_deliveries_state ON processor_deliveries(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_processor_delivery_attempts_delivery ON processor_delivery_attempts(delivery_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_processor_attempts_run ON processor_attempts(processor_run_id, started_at);
@@ -399,8 +426,74 @@ def migrate(connection: sqlite3.Connection) -> None:
             "COALESCE(recovery_claimed_at, recovery_notified_at, recovered_at) "
             "ELSE recovery_claimed_at END"
         )
+    binding_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(processor_bindings)").fetchall()
+    }
+    for name in ("label", "url"):
+        if binding_columns and name not in binding_columns:
+            connection.execute(f"ALTER TABLE processor_bindings ADD COLUMN {name} TEXT")
     connection.executescript(SCHEMA)
+    _backfill_review_groups(connection)
     connection.commit()
+
+
+def _review_key(value: Any, run_id: str) -> str:
+    if isinstance(value, str) and value.strip():
+        cleaned = value.strip()
+        if re.match(r"^(?:local_|task_|[0-9a-f]{8}-)", cleaned):
+            return cleaned.split()[0]
+        return cleaned
+    return f"run:{run_id}"
+
+
+def _backfill_review_groups(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        "SELECT pr.*, e.space_id FROM processor_runs pr "
+        "JOIN events e ON e.id=pr.event_id WHERE pr.state='needs-review' "
+        "ORDER BY pr.created_at, pr.id"
+    ).fetchall()
+    for row in rows:
+        decision = json.loads(row["decision_json"])
+        facts = json.loads(row["facts_json"])
+        key = _review_key(
+            facts.get("shared_decision_task")
+            or decision.get("shared_decision_task")
+            or decision.get("decision_task")
+            or facts.get("decision_task"),
+            row["id"],
+        )
+        digest = hashlib.sha256(f"{row['space_id']}\0{key}".encode()).hexdigest()[:16]
+        review_id = f"review_{digest}"
+        title = str(decision.get("review_title") or row["summary"] or key).split(".", 1)[0]
+        title = title[:180]
+        url = decision.get("review_url") or facts.get("review_url")
+        connection.execute(
+            "INSERT INTO review_groups(id, space_id, review_key, title, summary, url, state, "
+            "created_at, updated_at) VALUES(?,?,?,?,?,?,'open',?,?) "
+            "ON CONFLICT(space_id, review_key) DO UPDATE SET "
+            "updated_at=MAX(review_groups.updated_at, excluded.updated_at), "
+            "url=COALESCE(review_groups.url, excluded.url)",
+            (
+                review_id,
+                row["space_id"],
+                key,
+                title,
+                row["summary"],
+                url,
+                row["created_at"],
+                row["updated_at"],
+            ),
+        )
+        actual = connection.execute(
+            "SELECT id FROM review_groups WHERE space_id=? AND review_key=?",
+            (row["space_id"], key),
+        ).fetchone()["id"]
+        connection.execute(
+            "INSERT INTO processor_review_links(review_id, processor_run_id, created_at) "
+            "VALUES(?,?,?) ON CONFLICT(processor_run_id) DO NOTHING",
+            (actual, row["id"], row["updated_at"]),
+        )
 
 
 class Database:

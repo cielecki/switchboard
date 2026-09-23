@@ -178,7 +178,62 @@ def main() -> int:
             "accepted retry acceptance",
         )
 
-        deliveries: list[str] = []
+        review_runs: list[str] = []
+        for index in range(2):
+            review_event = invoke(
+                command,
+                db,
+                "event",
+                "emit",
+                "--source",
+                "timer/example-daily",
+                "--external-id",
+                f"review-{index}",
+                "--type",
+                "maintenance.due",
+            )
+            claimed = invoke(
+                command,
+                db,
+                "processor",
+                "claim-next",
+                "--worker",
+                "chat:claude:acceptance",
+            )
+            if claimed["id"] != review_event["processor_runs"][0]:
+                raise RuntimeError("review acceptance claimed the wrong run")
+            invoke(
+                command,
+                db,
+                "processor",
+                "needs-review",
+                claimed["id"],
+                "--worker",
+                "chat:claude:acceptance",
+                "--summary",
+                "One shared choice",
+                "--review-key",
+                "task_acceptance-shared",
+            )
+            review_runs.append(claimed["id"])
+        review_groups = invoke(
+            command, db, "processor", "review-list", "--state", "open"
+        )
+        if len(review_groups) != 1 or review_groups[0]["open_run_count"] != 2:
+            raise RuntimeError(f"review runs were not grouped: {review_groups}")
+        invoke(
+            command,
+            db,
+            "processor",
+            "review-resolve-group",
+            review_groups[0]["id"],
+            "--resolution",
+            "retry",
+            "--decision",
+            '{"choice":"continue"}',
+        )
+
+        deliveries: list[str] = review_runs.copy()
         for index in range(3):
             event = invoke(
                 command,

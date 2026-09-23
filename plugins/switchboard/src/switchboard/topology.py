@@ -174,11 +174,18 @@ def validate_topology(document: dict[str, Any]) -> None:
             raise ValueError(
                 f"binding {binding.get('key')} has an invalid chat consumer"
             )
+        for field in ("label", "url"):
+            value = binding.get(field)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(
+                    f"binding {binding.get('key')} {field} must be a non-empty string or null"
+                )
 
 
 def _redactor() -> tuple[Any, dict[str, dict[str, Any]]]:
     path_names: dict[str, str] = {}
     consumer_names: dict[str, str] = {}
+    url_names: dict[str, str] = {}
     definitions: dict[str, dict[str, Any]] = {}
 
     def redact(value: Any) -> Any:
@@ -197,6 +204,8 @@ def _redactor() -> tuple[Any, dict[str, dict[str, Any]]]:
                 "CONSUMER",
                 "Durable chat consumer",
             )
+        elif re.match(r"^(?:https?|claude|codex):", value):
+            group, prefix, description = url_names, "URL", "Local task link"
         elif os.path.isabs(value):
             group, prefix, description = path_names, "PATH", "Absolute local path"
         if group is None:
@@ -264,6 +273,8 @@ def export_topology(
             "enabled": item["state"] == "enabled",
             "activate_inactive": item["activate_inactive"],
             "lease_seconds": item["lease_seconds"],
+            "label": item["label"],
+            "url": redact(item["url"]) if item["url"] else None,
         }
         for item in core.list_processor_bindings(db)
     ]
@@ -364,6 +375,8 @@ def _normalize(document: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]
                     "enabled": item.get("enabled", True),
                     "activate_inactive": item.get("activate_inactive", False),
                     "lease_seconds": item.get("lease_seconds", 1800),
+                    "label": item.get("label"),
+                    "url": item.get("url"),
                 },
             )
         )
@@ -457,6 +470,8 @@ def _actual(
                 "enabled": row["state"] == "enabled",
                 "activate_inactive": row["activate_inactive"],
                 "lease_seconds": row["lease_seconds"],
+                "label": row["label"],
+                "url": row["url"],
             }
         )
     raise ValueError(f"unsupported topology resource: {resource_type}")
@@ -666,6 +681,8 @@ def _apply_resource(db: Database, operation: dict[str, Any]) -> str:
         consumer=desired["consumer"],
         activate_inactive=desired["activate_inactive"],
         lease_seconds=desired["lease_seconds"],
+        label=desired["label"],
+        url=desired["url"],
     )
     if not desired["enabled"]:
         binding = core.set_processor_binding_enabled(db, binding["id"], False)
