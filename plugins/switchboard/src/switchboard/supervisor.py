@@ -383,6 +383,7 @@ def run_cycle(
     activate_inactive: bool = False,
     delivery_timeout: int = 30,
     delivery_retry_seconds: int = 60,
+    accepted_retry_seconds: int = 120,
     delivery_batch_size: int = 1,
     at: datetime | None = None,
     ingest_runner: Callable[..., dict[str, Any]] = run_ingest_shadow,
@@ -406,6 +407,12 @@ def run_cycle(
     errors: list[str] = []
 
     core.recover_expired_processor_attempts(db, cycle_timestamp)
+    recovered_unacknowledged = core.recover_unacknowledged_deliveries(
+        db, cycle_timestamp, after_seconds=accepted_retry_seconds
+    )
+    recovered_unclaimed = core.recover_unclaimed_processor_deliveries(
+        db, cycle_timestamp, after_seconds=accepted_retry_seconds
+    )
     core.coalesce_processor_deliveries(db)
 
     if process_schedules:
@@ -497,6 +504,8 @@ def run_cycle(
         "schedules": schedule_results,
         "deliveries": delivery_results,
         "processor_deliveries": processor_delivery_results,
+        "recovered_unacknowledged_deliveries": recovered_unacknowledged,
+        "recovered_unclaimed_processor_deliveries": recovered_unclaimed,
         "alerts": alert_results,
         "errors": errors,
     }
@@ -510,6 +519,7 @@ def run_once(
     activate_inactive: bool = False,
     delivery_timeout: int = 30,
     delivery_retry_seconds: int = 60,
+    accepted_retry_seconds: int = 120,
     delivery_batch_size: int = 1,
     alert_command: list[str] | None = None,
     alert_after_seconds: int = 900,
@@ -532,6 +542,7 @@ def run_once(
             activate_inactive=activate_inactive,
             delivery_timeout=delivery_timeout,
             delivery_retry_seconds=delivery_retry_seconds,
+            accepted_retry_seconds=accepted_retry_seconds,
             delivery_batch_size=delivery_batch_size,
             alert_command=alert_command,
             alert_after_seconds=alert_after_seconds,
@@ -561,6 +572,7 @@ def run_forever(
     activate_inactive: bool = False,
     delivery_timeout: int = 30,
     delivery_retry_seconds: int = 60,
+    accepted_retry_seconds: int = 120,
     delivery_batch_size: int = 1,
     alert_command: list[str] | None = None,
     alert_after_seconds: int = 900,
@@ -607,6 +619,7 @@ def run_forever(
                     activate_inactive=activate_inactive,
                     delivery_timeout=delivery_timeout,
                     delivery_retry_seconds=delivery_retry_seconds,
+                    accepted_retry_seconds=accepted_retry_seconds,
                     delivery_batch_size=delivery_batch_size,
                     alert_command=alert_command,
                     alert_after_seconds=alert_after_seconds,

@@ -71,6 +71,12 @@ Delivery follows the same split. A broker accepting a stable request changes a d
 `pending` to `accepted`; only the destination consumer can change it to `acknowledged` after the
 matched work is complete.
 
+Transport acceptance is provisional until the destination acknowledges a wait delivery or claims
+the processor run. If an accepted wake remains unacknowledged or unclaimed past the configured
+timeout, the supervisor returns it to `pending` without changing its stable request ID. This makes
+temporary host or plugin unavailability retryable while preserving idempotency when the first
+attempt reaches the transcript late.
+
 The supervisor never converts transport acceptance into task completion. It isolates adapter and
 delivery failures, advances schedules deterministically, and exposes its last heartbeat and error
 without making the web interface a control surface.

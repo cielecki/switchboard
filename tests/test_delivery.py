@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from switchboard import core
@@ -103,6 +104,70 @@ class DeliveryTest(unittest.TestCase):
 
         self.assertEqual(result["state"], "accepted")
         self.assertEqual(core.get_delivery(self.db, self.delivery_id)["state"], "accepted")
+
+    def test_unacknowledged_accepted_delivery_retries_with_same_request_id(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(
+                command,
+                2,
+                stdout=(
+                    '{"status":"timeout","delivery_status":"accepted",'
+                    '"receipt_status":null}'
+                ),
+                stderr="",
+            )
+
+        first = core.dispatch_delivery(
+            self.db,
+            self.delivery_id,
+            relay=self.relay,
+            cli_command=["/plugin/bin/switchboard"],
+            runner=runner,
+        )
+        accepted_at = datetime.fromisoformat(
+            core.get_delivery(self.db, self.delivery_id)["accepted_at"]
+        )
+        recovered = core.recover_unacknowledged_deliveries(
+            self.db,
+            (accepted_at + timedelta(seconds=121)).isoformat(),
+            after_seconds=120,
+        )
+        self.assertEqual(recovered, 1)
+        self.assertEqual(core.get_delivery(self.db, self.delivery_id)["state"], "pending")
+
+        second = core.dispatch_delivery(
+            self.db,
+            self.delivery_id,
+            relay=self.relay,
+            cli_command=["/plugin/bin/switchboard"],
+            runner=runner,
+        )
+        self.assertEqual(first["request_id"], second["request_id"])
+        self.assertEqual(calls[0], calls[1])
+
+    def test_held_receipt_stays_pending(self) -> None:
+        with self.assertRaisesRegex(ValueError, "relay exited 2"):
+            core.dispatch_delivery(
+                self.db,
+                self.delivery_id,
+                relay=self.relay,
+                cli_command=["/plugin/bin/switchboard"],
+                runner=lambda command, **_kwargs: subprocess.CompletedProcess(
+                    command,
+                    2,
+                    stdout=(
+                        '{"status":"held","delivery_status":"accepted",'
+                        '"receipt_status":"held"}'
+                    ),
+                    stderr="",
+                ),
+            )
+        delivery = core.get_delivery(self.db, self.delivery_id)
+        self.assertEqual(delivery["state"], "pending")
+        self.assertEqual(delivery["attempts"][-1]["state"], "failed")
 
 
 if __name__ == "__main__":

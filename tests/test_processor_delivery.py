@@ -358,6 +358,91 @@ class ProcessorDeliveryTest(unittest.TestCase):
         self.assertEqual(current["state"], "accepted")
         self.assertEqual(current["attempts"][-1]["state"], "accepted")
 
+    def test_unclaimed_accepted_wake_retries_with_the_same_request_id(self) -> None:
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        self.emit()
+        delivery = core.list_processor_deliveries(self.db)[0]
+        relay = self.root / "send-message.py"
+        relay.touch()
+        commands: list[list[str]] = []
+
+        def accepted_runner(command, **_kwargs):
+            commands.append(command)
+            return SimpleNamespace(
+                returncode=2,
+                stdout=(
+                    '{"status":"timeout","delivery_status":"accepted",'
+                    '"receipt_status":null}'
+                ),
+                stderr="",
+            )
+
+        first = core.dispatch_processor_delivery(
+            self.db,
+            delivery["id"],
+            relay=relay,
+            cli_command=["switchboard"],
+            runner=accepted_runner,
+        )
+        accepted_at = datetime.fromisoformat(
+            core.get_processor_delivery(self.db, delivery["id"])["accepted_at"]
+        )
+        recovered = core.recover_unclaimed_processor_deliveries(
+            self.db,
+            (accepted_at + timedelta(seconds=121)).isoformat(),
+            after_seconds=120,
+        )
+        current = core.get_processor_delivery(self.db, delivery["id"])
+        self.assertEqual(recovered, 1)
+        self.assertEqual(current["state"], "pending")
+        self.assertEqual(current["generation"], 0)
+
+        second = core.dispatch_processor_delivery(
+            self.db,
+            delivery["id"],
+            relay=relay,
+            cli_command=["switchboard"],
+            runner=accepted_runner,
+        )
+        self.assertEqual(first["request_id"], second["request_id"])
+        self.assertEqual(commands[0], commands[1])
+
+    def test_held_receipt_remains_pending_for_retry(self) -> None:
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        self.emit()
+        delivery = core.list_processor_deliveries(self.db)[0]
+        relay = self.root / "send-message.py"
+        relay.touch()
+
+        with self.assertRaisesRegex(ValueError, "relay exited 2"):
+            core.dispatch_processor_delivery(
+                self.db,
+                delivery["id"],
+                relay=relay,
+                cli_command=["switchboard"],
+                runner=lambda *_args, **_kwargs: SimpleNamespace(
+                    returncode=2,
+                    stdout=(
+                        '{"status":"held","delivery_status":"accepted",'
+                        '"receipt_status":"held"}'
+                    ),
+                    stderr="",
+                ),
+            )
+        current = core.get_processor_delivery(self.db, delivery["id"])
+        self.assertEqual(current["state"], "pending")
+        self.assertEqual(current["attempts"][-1]["state"], "failed")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -305,6 +305,61 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(len(result["deliveries"]), 1)
         self.assertEqual(len(core.list_deliveries(self.db, "pending")), 1)
 
+    def test_cycle_rearms_and_dispatches_an_unclaimed_accepted_wake(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_route(
+            self.db,
+            space_id="demo",
+            name="triage",
+            predicate={"event_type": "message.received"},
+            processor="mail-triage",
+        )
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        core.emit_event(
+            self.db,
+            source_id="mail",
+            external_id="message-recover",
+            event_type="message.received",
+            attributes={},
+        )
+        delivery = core.list_processor_deliveries(self.db)[0]
+        at = datetime.now().astimezone()
+        old = (at - timedelta(seconds=121)).isoformat()
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE processor_deliveries SET state='accepted', accepted_at=? WHERE id=?",
+                (old, delivery["id"]),
+            )
+        relay = self.root / "send-message.py"
+        relay.touch()
+        dispatched: list[str] = []
+
+        def processor_delivery_runner(db, delivery_id, **_kwargs):
+            dispatched.append(delivery_id)
+            with db.transaction() as connection:
+                connection.execute(
+                    "UPDATE processor_deliveries SET state='accepted', accepted_at=? WHERE id=?",
+                    (at.isoformat(), delivery_id),
+                )
+            return {"id": delivery_id, "state": "accepted"}
+
+        result = run_cycle(
+            self.db,
+            relay=relay,
+            cli_command=["switchboard"],
+            at=at,
+            processor_delivery_runner=processor_delivery_runner,
+        )
+
+        self.assertEqual(result["recovered_unclaimed_processor_deliveries"], 1)
+        self.assertEqual(dispatched, [delivery["id"]])
+
     def test_stalled_processor_alert_and_recovery_are_each_sent_once(self) -> None:
         core.create_space(self.db, "demo")
         core.register_source(self.db, "mail", "demo", "mail")
@@ -349,6 +404,7 @@ class SupervisorTest(unittest.TestCase):
             at=at,
             alert_command=["/alert"],
             alert_runner=alert_runner,
+            accepted_retry_seconds=3600,
         )
         second = run_cycle(
             self.db,
@@ -357,6 +413,7 @@ class SupervisorTest(unittest.TestCase):
             at=at,
             alert_command=["/alert"],
             alert_runner=alert_runner,
+            accepted_retry_seconds=3600,
         )
         core.claim_processor_run(
             self.db, emitted["processor_runs"][0], worker="chat:claude:session-1"
@@ -368,6 +425,7 @@ class SupervisorTest(unittest.TestCase):
             at=at,
             alert_command=["/alert"],
             alert_runner=alert_runner,
+            accepted_retry_seconds=3600,
         )
 
         self.assertEqual(first["alerts"][0]["state"], "notified")

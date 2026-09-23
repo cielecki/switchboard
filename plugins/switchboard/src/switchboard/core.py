@@ -1319,6 +1319,55 @@ def coalesce_processor_deliveries(db: Database, consumer: str | None = None) -> 
     return len(duplicate_ids)
 
 
+def recover_unclaimed_processor_deliveries(
+    db: Database, at: str, *, after_seconds: int
+) -> int:
+    """Re-arm wakes accepted by transport but never claimed by their worker.
+
+    Keep the delivery generation unchanged so re-dispatch uses the same stable broker request ID.
+    The relay can then recognize a late transcript write from the first attempt, while a genuinely
+    lost or temporarily held wake remains safely retryable.
+    """
+    if after_seconds < 1:
+        raise ValueError("accepted claim timeout must be at least one second")
+    threshold = datetime.fromisoformat(at).astimezone(UTC) - timedelta(seconds=after_seconds)
+    recovered = 0
+    with db.transaction() as connection:
+        rows = connection.execute(
+            "SELECT pd.id, pd.accepted_at FROM processor_deliveries pd "
+            "JOIN processor_runs pr ON pr.id=pd.processor_run_id "
+            "WHERE pd.state='accepted' AND pr.state='pending' "
+            "AND pd.accepted_at IS NOT NULL "
+            "ORDER BY pd.accepted_at, pd.id",
+        ).fetchall()
+        for row in rows:
+            accepted_at = datetime.fromisoformat(row["accepted_at"])
+            if accepted_at.tzinfo is None:
+                accepted_at = accepted_at.replace(tzinfo=UTC)
+            if accepted_at.astimezone(UTC) > threshold:
+                continue
+            changed = connection.execute(
+                "UPDATE processor_deliveries SET state='pending', accepted_at=NULL, "
+                "last_error='wake accepted but not claimed; retrying' "
+                "WHERE id=? AND state='accepted' "
+                "AND EXISTS (SELECT 1 FROM processor_runs pr "
+                "WHERE pr.id=processor_deliveries.processor_run_id AND pr.state='pending')",
+                (row["id"],),
+            ).rowcount
+            if not changed:
+                continue
+            recovered += 1
+            audit(
+                connection,
+                command="processor.delivery-recover-unclaimed",
+                entity_type="processor_delivery",
+                entity_id=row["id"],
+                payload={"accepted_at": row["accepted_at"], "recovered_at": at},
+                actor="supervisor",
+            )
+    return recovered
+
+
 def list_processor_runs(
     db: Database,
     *,
@@ -1832,6 +1881,45 @@ def retry_processor_run(db: Database, run_id: str) -> dict[str, Any]:
     return get_processor_run(db, run_id)
 
 
+def recover_unacknowledged_deliveries(
+    db: Database, at: str, *, after_seconds: int
+) -> int:
+    """Re-arm accepted wait deliveries that never reached acknowledgement."""
+    if after_seconds < 1:
+        raise ValueError("accepted acknowledgement timeout must be at least one second")
+    threshold = datetime.fromisoformat(at).astimezone(UTC) - timedelta(seconds=after_seconds)
+    recovered = 0
+    with db.transaction() as connection:
+        rows = connection.execute(
+            "SELECT id, accepted_at FROM deliveries WHERE state='accepted' "
+            "AND accepted_at IS NOT NULL ORDER BY accepted_at, id"
+        ).fetchall()
+        for row in rows:
+            accepted_at = datetime.fromisoformat(row["accepted_at"])
+            if accepted_at.tzinfo is None:
+                accepted_at = accepted_at.replace(tzinfo=UTC)
+            if accepted_at.astimezone(UTC) > threshold:
+                continue
+            changed = connection.execute(
+                "UPDATE deliveries SET state='pending', accepted_at=NULL, "
+                "last_error='wake accepted but not acknowledged; retrying' "
+                "WHERE id=? AND state='accepted'",
+                (row["id"],),
+            ).rowcount
+            if not changed:
+                continue
+            recovered += 1
+            audit(
+                connection,
+                command="delivery.recover-unacknowledged",
+                entity_type="delivery",
+                entity_id=row["id"],
+                payload={"accepted_at": row["accepted_at"], "recovered_at": at},
+                actor="supervisor",
+            )
+    return recovered
+
+
 def list_deliveries(db: Database, state: str | None = None) -> list[dict[str, Any]]:
     query = "SELECT * FROM deliveries"
     params: tuple[Any, ...] = ()
@@ -1996,14 +2084,25 @@ def processor_consumer_is_busy(
     return row is not None
 
 
-def _relay_accepted(result: subprocess.CompletedProcess[str]) -> bool:
+def _relay_outcome(result: subprocess.CompletedProcess[str]) -> str:
+    """Classify a chat wake without conflating socket acceptance with delivery."""
     if result.returncode == 0:
-        return True
+        return "delivered"
     try:
         payload = json.loads(result.stdout)
     except (json.JSONDecodeError, TypeError):
-        return False
-    return isinstance(payload, dict) and payload.get("delivery_status") == "accepted"
+        return "failed"
+    if not isinstance(payload, dict):
+        return "failed"
+    if payload.get("delivery_status") == "delivered":
+        return "delivered"
+    if (
+        payload.get("delivery_status") == "accepted"
+        and payload.get("status") == "timeout"
+        and payload.get("receipt_status") is None
+    ):
+        return "accepted"
+    return "failed"
 
 
 def dispatch_processor_delivery(
@@ -2067,7 +2166,8 @@ def dispatch_processor_delivery(
 
     try:
         result = runner(command, capture_output=True, text=True, timeout=timeout + 25)
-        error = None if _relay_accepted(result) else (
+        relay_outcome = _relay_outcome(result)
+        error = None if relay_outcome in {"accepted", "delivered"} else (
             f"relay exited {result.returncode}: " + (result.stderr or result.stdout)[-2000:]
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -2165,7 +2265,8 @@ def dispatch_delivery(
 
     try:
         result = runner(command, capture_output=True, text=True, timeout=timeout + 25)
-        error = None if _relay_accepted(result) else (
+        relay_outcome = _relay_outcome(result)
+        error = None if relay_outcome in {"accepted", "delivered"} else (
             f"relay exited {result.returncode}: " + (result.stderr or result.stdout)[-2000:]
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

@@ -10,7 +10,9 @@ Each cycle:
    delivery, alerts, or other schedules;
 3. advances each schedule by its configured interval;
 4. recovers expired processor leases and materializes missing bound deliveries;
-   it also coalesces legacy databases that already contain multiple accepted wakes per consumer;
+   accepted wakes that are not acknowledged or claimed within the configured timeout are re-armed
+   with the same stable request ID, and legacy databases with multiple accepted wakes per consumer
+   are coalesced;
 5. dispatches the oldest eligible wait or processor deliveries, up to the configured per-cycle
    batch limit, when a chats relay is configured, with at most one in-flight processor wake per
    consumer;
@@ -21,6 +23,10 @@ Each cycle:
 A failed or timed-out source cannot stop the coordinator; Switchboard kills the whole external
 process group so descendants cannot keep captured pipes open after the nominal timeout. Failed chat deliveries stay pending and
 retain their stable broker request ID. The retry interval prevents tight failure loops.
+Native `held`, `refused`, `dropped`, `denied`, and `expired` receipts are delivery failures and
+remain eligible for retry. Socket acceptance without transcript delivery is provisional; if a
+wait is not acknowledged or a processor has not claimed its run by `--accepted-retry`, Switchboard
+retries the same request ID rather than creating a duplicate wake.
 The default `--delivery-batch 1` keeps source polling and the health heartbeat responsive even when
 the initial queue contains many chat wakes. Increase it only when the relay is known to return
 quickly.

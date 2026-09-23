@@ -227,6 +227,7 @@ On macOS, install it as a persistent per-user launch agent entirely through the 
 ```bash
 switchboard --json service install --relay /absolute/path/to/chats/send-message.py \
   --activate-inactive \
+  --accepted-retry 120 \
   --alert-command-json '["/absolute/path/to/local-alert-adapter"]' \
   --alert-after 900
 switchboard --json service status

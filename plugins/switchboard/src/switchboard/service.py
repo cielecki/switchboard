@@ -50,6 +50,7 @@ def install_launch_agent(
     port: int = 8765,
     poll_seconds: int = 5,
     delivery_retry_seconds: int = 60,
+    accepted_retry_seconds: int = 120,
     delivery_batch_size: int = 1,
     activate_inactive: bool = False,
     alert_command: list[str] | None = None,
@@ -65,6 +66,7 @@ def install_launch_agent(
     if (
         poll_seconds < 1
         or delivery_retry_seconds < 1
+        or accepted_retry_seconds < 1
         or delivery_batch_size < 1
         or alert_after_seconds < 1
     ):
@@ -90,6 +92,8 @@ def install_launch_agent(
         str(poll_seconds),
         "--delivery-retry",
         str(delivery_retry_seconds),
+        "--accepted-retry",
+        str(accepted_retry_seconds),
         "--delivery-batch",
         str(delivery_batch_size),
         "--alert-after",

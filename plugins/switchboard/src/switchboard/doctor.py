@@ -230,11 +230,44 @@ def run_doctor(db: Database, *, now_at: datetime | None = None) -> dict[str, Any
             )
     pending = core.list_processor_deliveries(db, "pending")
     accepted = core.list_processor_deliveries(db, "accepted")
+    accepted_waits = core.list_deliveries(db, "accepted")
     open_alerts = core.list_processor_alerts(db, "open")
     active_leases = db.row(
         "SELECT count(*) AS count FROM processor_attempts WHERE state='running' AND lease_expires_at>?",
         (checked_at.isoformat(),),
     )["count"]
+    accepted_retry = int(_argument(arguments, "--accepted-retry") or 120)
+    stale_accepted = [
+        delivery
+        for delivery in accepted
+        if delivery.get("accepted_at")
+        and delivery.get("processor_state") == "pending"
+        and _parse(delivery["accepted_at"])
+        <= checked_at - timedelta(seconds=accepted_retry)
+    ]
+    if stale_accepted:
+        _finding(
+            findings,
+            "warning",
+            "processor.unclaimed-wake",
+            f"{len(stale_accepted)} accepted processor wake(s) were not claimed",
+            delivery_ids=[delivery["id"] for delivery in stale_accepted],
+        )
+    stale_waits = [
+        delivery
+        for delivery in accepted_waits
+        if delivery.get("accepted_at")
+        and _parse(delivery["accepted_at"])
+        <= checked_at - timedelta(seconds=accepted_retry)
+    ]
+    if stale_waits:
+        _finding(
+            findings,
+            "warning",
+            "delivery.unacknowledged-wake",
+            f"{len(stale_waits)} accepted wait delivery wake(s) were not acknowledged",
+            delivery_ids=[delivery["id"] for delivery in stale_waits],
+        )
     for source in core.list_sources(db):
         if source["state"] not in {"enabled", "ready", "healthy"}:
             _finding(
@@ -282,6 +315,7 @@ def run_doctor(db: Database, *, now_at: datetime | None = None) -> dict[str, Any
             key: service.get(key) for key in ("installed", "loaded", "label", "plist")
         },
         "queues": {
+            "accepted_deliveries": len(accepted_waits),
             "pending_processor_deliveries": len(pending),
             "accepted_processor_deliveries": len(accepted),
             "active_leases": active_leases,

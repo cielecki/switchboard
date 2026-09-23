@@ -58,6 +58,12 @@ class ServiceTest(unittest.TestCase):
                 ],
                 "1",
             )
+            self.assertEqual(
+                payload["ProgramArguments"][
+                    payload["ProgramArguments"].index("--accepted-retry") + 1
+                ],
+                "120",
+            )
             self.assertIn("--alert-command-json", payload["ProgramArguments"])
             alert_argument = payload["ProgramArguments"][
                 payload["ProgramArguments"].index("--alert-command-json") + 1

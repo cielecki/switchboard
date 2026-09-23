@@ -68,6 +68,22 @@ def main() -> int:
         )
         environment = dict(os.environ, SWITCHBOARD_ACCEPTANCE_ALERTS=str(alerts))
 
+        accepted_relay_state = root / "accepted-relay.jsonl"
+        accepted_relay = root / "accepted-relay.py"
+        executable(
+            accepted_relay,
+            "#!/usr/bin/env python3\n"
+            "import json, os, pathlib, sys\n"
+            "path = pathlib.Path(os.environ['SWITCHBOARD_ACCEPTANCE_RELAY_STATE'])\n"
+            "request_id = sys.argv[sys.argv.index('--request-id') + 1]\n"
+            "prior = path.read_text().splitlines() if path.exists() else []\n"
+            "with path.open('a') as handle: handle.write(request_id + '\\n')\n"
+            "if not prior:\n"
+            "    print(json.dumps({'status': 'timeout', 'delivery_status': 'accepted', 'receipt_status': None}))\n"
+            "    raise SystemExit(2)\n"
+            "print(json.dumps({'status': 'delivered', 'delivery_status': 'delivered'}))\n",
+        )
+
         invoke(
             command,
             db,
@@ -88,6 +104,79 @@ def main() -> int:
         )
         if any(item["action"] != "noop" for item in repeated["operations"]):
             raise RuntimeError("repeated topology apply was not a no-op")
+
+        retry_event = invoke(
+            command,
+            db,
+            "event",
+            "emit",
+            "--source",
+            "timer/example-daily",
+            "--external-id",
+            "accepted-retry",
+            "--type",
+            "maintenance.due",
+        )
+        original = os.environ.copy()
+        os.environ["SWITCHBOARD_ACCEPTANCE_RELAY_STATE"] = str(accepted_relay_state)
+        try:
+            first_wake = invoke(
+                command,
+                db,
+                "supervisor",
+                "once",
+                "--relay",
+                str(accepted_relay),
+                "--accepted-retry",
+                "1",
+                "--delivery-retry",
+                "1",
+            )
+            time.sleep(1.1)
+            retried_wake = invoke(
+                command,
+                db,
+                "supervisor",
+                "once",
+                "--relay",
+                str(accepted_relay),
+                "--accepted-retry",
+                "1",
+                "--delivery-retry",
+                "1",
+            )
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+        relay_request_ids = accepted_relay_state.read_text().splitlines()
+        if (
+            len(first_wake["processor_deliveries"]) != 1
+            or retried_wake["recovered_unclaimed_processor_deliveries"] != 1
+            or len(retried_wake["processor_deliveries"]) != 1
+            or len(set(relay_request_ids)) != 1
+        ):
+            raise RuntimeError(f"accepted wake did not retry idempotently: {relay_request_ids}")
+        retry_run = invoke(
+            command,
+            db,
+            "processor",
+            "claim-next",
+            "--worker",
+            "chat:claude:acceptance",
+        )
+        if retry_run["id"] != retry_event["processor_runs"][0]:
+            raise RuntimeError("accepted retry claimed the wrong processor run")
+        invoke(
+            command,
+            db,
+            "processor",
+            "complete",
+            retry_run["id"],
+            "--worker",
+            "chat:claude:acceptance",
+            "--summary",
+            "accepted retry acceptance",
+        )
 
         deliveries: list[str] = []
         for index in range(3):
