@@ -99,8 +99,9 @@ switchboard --json backup create /absolute/path/to/switchboard-2026-09-22.sqlite
 switchboard --json backup verify /absolute/path/to/switchboard-2026-09-22.sqlite3
 ```
 
-`doctor` exits non-zero when it finds a condition that prevents safe operation. Restoration stays
-an explicit operator procedure in 0.9; never replace the live database while the supervisor runs.
+`doctor` exits non-zero when it finds a condition that prevents safe operation. Before upgrading a
+live service, create a backup and verify its integrity. Restoration remains an explicit operator
+procedure; never replace the live database while the supervisor runs.
 
 ## Adapters and delivery
 
