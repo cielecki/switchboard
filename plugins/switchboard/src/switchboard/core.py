@@ -361,6 +361,72 @@ def upsert_inbound_schedule(
     return get_schedule(db, schedule_id)
 
 
+def upsert_stream_schedule(
+    db: Database,
+    schedule_id: str,
+    *,
+    command: list[str],
+    every_seconds: int = 5,
+    environment: dict[str, str] | None = None,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    """Supervise one persistent newline-delimited adapter command.
+
+    ``every_seconds`` is the restart delay after the command exits; a healthy stream occupies
+    its schedule worker continuously and is never launched twice.
+    """
+    if not schedule_id:
+        raise ValueError("schedule id cannot be empty")
+    if every_seconds < 1:
+        raise ValueError("stream restart delay must be at least one second")
+    if not command or not all(isinstance(part, str) and part for part in command):
+        raise ValueError("stream command must be a non-empty string array")
+    executable = Path(command[0]).expanduser().resolve()
+    if not executable.is_file():
+        raise ValueError(f"stream executable not found: {executable}")
+    normalized_command = [str(executable), *command[1:]]
+    environment = environment or {}
+    if any(not isinstance(key, str) or not isinstance(value, str)
+           for key, value in environment.items()):
+        raise ValueError("stream environment must contain string keys and values")
+    db.initialize()
+    timestamp = now()
+    config = {"command": normalized_command, "environment": environment}
+    with db.transaction() as connection:
+        connection.execute(
+            "INSERT INTO adapter_schedules(id, adapter, config_json, every_seconds, enabled, "
+            "next_run_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, "
+            "config_json=excluded.config_json, schedule_kind='interval', "
+            "every_seconds=excluded.every_seconds, enabled=excluded.enabled, "
+            "next_run_at=excluded.next_run_at, updated_at=excluded.updated_at",
+            (
+                schedule_id,
+                "command-stream",
+                json.dumps(config, sort_keys=True),
+                every_seconds,
+                int(enabled),
+                timestamp,
+                timestamp,
+                timestamp,
+            ),
+        )
+        audit(
+            connection,
+            command="schedule.upsert",
+            entity_type="adapter_schedule",
+            entity_id=schedule_id,
+            payload={
+                "adapter": "command-stream",
+                "command": normalized_command,
+                "environment_keys": sorted(environment),
+                "restart_seconds": every_seconds,
+                "enabled": enabled,
+            },
+        )
+    return get_schedule(db, schedule_id)
+
+
 def upsert_timer_schedule(
     db: Database,
     schedule_id: str,

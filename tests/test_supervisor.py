@@ -152,6 +152,35 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(calls[0]["profile"], "nina")
         self.assertEqual(calls[0]["slack_discovery_script"], str(slack_script.resolve()))
 
+    def test_due_stream_schedule_uses_persistent_runner(self) -> None:
+        executable = self.root / "stream"
+        executable.touch()
+        created = core.upsert_stream_schedule(
+            self.db,
+            "nina-slack-socket",
+            command=[str(executable), "--switchboard"],
+            environment={"CHANNEL": "C123"},
+            every_seconds=5,
+        )
+        calls: list[dict] = []
+
+        def stream_runner(_db, **kwargs):
+            calls.append(kwargs)
+            return {"run": {"id": "run-stream", "state": "completed"}}
+
+        workers = ScheduleWorkers(self.db, stream_runner=stream_runner)
+        self.addCleanup(workers.shutdown)
+        launched = workers.poll(created["next_run_at"])
+        self.assertEqual(launched, [{"id": "nina-slack-socket", "state": "running"}])
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not calls:
+            time.sleep(0.01)
+        self.assertEqual(calls, [{
+            "command": [str(executable.resolve()), "--switchboard"],
+            "environment": {"CHANNEL": "C123"},
+        }])
+
     def test_schedule_workers_do_not_block_other_sources(self) -> None:
         release = threading.Event()
         core.upsert_ingest_schedule(

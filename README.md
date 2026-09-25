@@ -200,6 +200,17 @@ Add `--slack-discovery-script /absolute/path/to/watch_inbound_slack.sh` to perfo
 mention poll in the same schedule. Switchboard stores only stable message/thread pointers and
 coarse state; message text remains in Slack.
 
+Push-capable sources can run as persistent newline-delimited adapter streams owned by the same
+supervisor:
+
+```bash
+switchboard --json schedule add-stream nina-slack-socket \
+  --command-json '["/absolute/path/to/node", "/absolute/path/to/watch.mjs", "--switchboard-stream"]' \
+  --restart-after 5
+```
+
+The restart delay applies only after an exit; a healthy stream remains connected continuously.
+
 For production, configure Gmail and Slack as separate schedules with `--source-mode gmail` and
 `--source-mode slack`. They execute independently, so a slow Gmail call does not delay Slack,
 ingest, chat deliveries, alerts, or the supervisor heartbeat.

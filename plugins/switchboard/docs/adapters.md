@@ -50,6 +50,24 @@ The process must exit zero and print exactly one object:
   idempotent.
 - Adapters are invoked as argv arrays, never through a shell.
 
+## Persistent command streams
+
+A source that pushes observations may stay connected under the Switchboard supervisor instead of
+being polled. Register it with `schedule add-stream`; the command prints one compact adapter
+snapshot per line and flushes stdout after every snapshot:
+
+```bash
+switchboard --json schedule add-stream slack-socket \
+  --command-json '["/absolute/path/to/node", "/absolute/path/to/watcher.mjs", "--switchboard-stream"]' \
+  --restart-after 5
+```
+
+The schedule worker remains occupied while the stream is healthy, so the command has exactly one
+owner. If it exits, the schedule records the outcome and restarts it after the configured delay.
+Supervisor shutdown terminates the stream's complete process group. Secrets stay in the source's
+normal credential store; do not put them in the saved command or environment because schedule
+configuration is observable.
+
 ## Ingest adapter
 
 The built-in ingest adapter invokes the owning ingest system's supported
@@ -85,3 +103,7 @@ For a migration with an existing Slack cursor, run the first scheduled poll befo
 enabling the Slack route and binding. Review or close the historical baseline in Switchboard, then
 enable routing for subsequent mentions. Creating the route first can turn old cursor history into
 live processor work.
+
+The inbound workflow may instead expose its Socket Mode watcher as a persistent command stream.
+That source emits message and thread pointers only. Its open-request registry filters untagged
+replies before they cross into Switchboard, while direct mentions remain routable.

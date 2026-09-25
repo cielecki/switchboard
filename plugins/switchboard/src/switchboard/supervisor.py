@@ -14,7 +14,7 @@ from queue import Empty, SimpleQueue
 from typing import Any, TextIO
 
 from . import core
-from .adapters import run_inbound_leads, run_ingest_shadow, run_timer
+from .adapters import run_inbound_leads, run_ingest_shadow, run_stream_command, run_timer
 from .db import Database
 from .process import run_bounded, terminate_active_process_groups
 from .web import handler_for
@@ -102,6 +102,7 @@ def _execute_schedule(
     ingest_runner: Callable[..., dict[str, Any]] = run_ingest_shadow,
     inbound_runner: Callable[..., dict[str, Any]] = run_inbound_leads,
     timer_runner: Callable[..., dict[str, Any]] = run_timer,
+    stream_runner: Callable[..., dict[str, Any]] = run_stream_command,
     started_at: str | None = None,
 ) -> dict[str, Any]:
     if schedule.get("schedule_kind") == "calendar":
@@ -151,6 +152,12 @@ def _execute_schedule(
                 scheduled_for=schedule["next_run_at"],
                 attributes=config.get("attributes") or {},
             )
+        elif schedule["adapter"] == "command-stream":
+            result = stream_runner(
+                db,
+                command=config["command"],
+                environment=config.get("environment") or {},
+            )
         else:
             raise ValueError(f"unsupported scheduled adapter: {schedule['adapter']}")
         terminal = core.mark_schedule_finished(
@@ -189,11 +196,13 @@ class ScheduleWorkers:
         ingest_runner: Callable[..., dict[str, Any]] = run_ingest_shadow,
         inbound_runner: Callable[..., dict[str, Any]] = run_inbound_leads,
         timer_runner: Callable[..., dict[str, Any]] = run_timer,
+        stream_runner: Callable[..., dict[str, Any]] = run_stream_command,
     ) -> None:
         self.db = db
         self.ingest_runner = ingest_runner
         self.inbound_runner = inbound_runner
         self.timer_runner = timer_runner
+        self.stream_runner = stream_runner
         self._active: dict[str, threading.Thread] = {}
         self._active_lock = threading.Lock()
         self._results: SimpleQueue[dict[str, Any]] = SimpleQueue()
@@ -207,6 +216,7 @@ class ScheduleWorkers:
                     ingest_runner=self.ingest_runner,
                     inbound_runner=self.inbound_runner,
                     timer_runner=self.timer_runner,
+                    stream_runner=self.stream_runner,
                     started_at=started_at,
                 )
             )

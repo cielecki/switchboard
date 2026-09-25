@@ -158,6 +158,23 @@ class CliTest(unittest.TestCase):
 
         self.assertIsNone(self.run_cli("supervisor", "status"))
 
+    def test_add_stream_schedule_keeps_command_as_argv(self) -> None:
+        executable = Path(self.directory.name) / "watcher"
+        executable.touch()
+        schedule = self.run_cli(
+            "schedule", "add-stream", "slack-socket",
+            "--command-json", json.dumps([str(executable), "--switchboard-stream"]),
+            "--environment", '{"CHANNEL":"C123"}',
+            "--restart-after", "7",
+        )
+
+        self.assertEqual(schedule["adapter"], "command-stream")
+        self.assertEqual(schedule["every_seconds"], 7)
+        self.assertEqual(schedule["config"]["command"], [
+            str(executable.resolve()), "--switchboard-stream",
+        ])
+        self.assertEqual(schedule["config"]["environment"], {"CHANNEL": "C123"})
+
     def test_calendar_schedule_add_preview_and_update(self) -> None:
         created = self.run_cli(
             "schedule",

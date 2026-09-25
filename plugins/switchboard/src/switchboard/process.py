@@ -4,7 +4,8 @@ import os
 import signal
 import subprocess
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 _active_lock = threading.Lock()
@@ -77,3 +78,40 @@ def terminate_active_process_groups() -> None:
                 os.kill(process_group, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+@contextmanager
+def managed_process(
+    command: Sequence[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> Iterator[subprocess.Popen[str]]:
+    """Start a long-lived source process owned by the supervisor.
+
+    Persistent stream adapters cannot use ``run_bounded`` because a healthy process is
+    expected not to exit. Registering the process group here gives supervisor shutdown the
+    same descendant-cleanup guarantee as bounded adapters.
+    """
+    process = subprocess.Popen(
+        list(command),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=os.name == "posix",
+        bufsize=1,
+    )
+    with _active_lock:
+        _active_process_groups.add(process.pid)
+    try:
+        yield process
+    finally:
+        _terminate_process_group(process)
+        process.wait()
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+        with _active_lock:
+            _active_process_groups.discard(process.pid)

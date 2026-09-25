@@ -105,6 +105,12 @@ binding, reconcile the imported baseline, and only then begin live delivery.
 Run Gmail and Slack as separate schedules with `--source-mode gmail|slack`; scheduled adapters run
 independently, and a timeout terminates the complete descendant process group.
 
+For a push source, use `schedule add-stream --command-json '[...]' --restart-after N`. The
+Switchboard supervisor owns the persistent process, imports one newline-delimited adapter snapshot
+at a time, and restarts it after exit. Keep credentials out of the saved command and environment;
+the source command must resolve them through its own credential contract. Disable a superseded
+poll schedule before enabling the stream route so one upstream event has one transport owner.
+
 Use `schedule add-timer` for deterministic recurring maintenance wakes whose policy remains in the
 destination skill. `--first-run-at` requires an ISO timestamp with timezone; timer cadence remains
 anchored to that timestamp rather than drifting with execution duration.

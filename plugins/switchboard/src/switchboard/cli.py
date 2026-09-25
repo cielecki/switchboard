@@ -202,6 +202,16 @@ def build_parser() -> argparse.ArgumentParser:
     add_inbound.add_argument("--space", default="inbound-leads")
     add_inbound.add_argument("--timeout", type=int, default=240)
     add_inbound.add_argument("--disabled", action="store_true")
+    add_stream = schedule.add_parser(
+        "add-stream", help="supervise a persistent newline-delimited adapter command"
+    )
+    add_stream.add_argument("id")
+    add_stream.add_argument("--command-json", required=True, type=json_string_array)
+    add_stream.add_argument("--environment", type=json_object, default={})
+    add_stream.add_argument(
+        "--restart-after", type=int, default=5, help="seconds before restarting an exited stream"
+    )
+    add_stream.add_argument("--disabled", action="store_true")
     add_timer = schedule.add_parser(
         "add-timer", help="schedule a recurring deterministic timer event"
     )
@@ -530,6 +540,15 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 every_seconds=args.every,
                 space_id=args.space,
                 timeout=args.timeout,
+                enabled=not args.disabled,
+            )
+        if args.verb == "add-stream":
+            return core.upsert_stream_schedule(
+                db,
+                args.id,
+                command=args.command_json,
+                environment=args.environment,
+                every_seconds=args.restart_after,
                 enabled=not args.disabled,
             )
         if args.verb == "add-timer":
