@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from . import core
+from .calendar_schedule import normalize_calendar_rule
 from .db import Database
 
 DOCUMENT_VERSION = 1
@@ -117,6 +118,7 @@ def validate_topology(document: dict[str, Any]) -> None:
     for schedule in schedules:
         adapter = schedule.get("adapter")
         config = schedule.get("config")
+        schedule_kind = schedule.get("schedule_kind", "interval")
         if adapter not in {"ingest-shadow", "inbound-leads", "timer"}:
             raise ValueError(
                 f"schedule {schedule.get('id')} has unsupported adapter {adapter}"
@@ -125,12 +127,25 @@ def validate_topology(document: dict[str, Any]) -> None:
             raise ValueError(  # noqa: TRY004
                 f"schedule {schedule.get('id')} config must be an object"
             )
-        if (
-            not isinstance(schedule.get("every_seconds"), int)
-            or schedule["every_seconds"] < 1
-        ):
+        if schedule_kind == "calendar":
+            if adapter != "timer":
+                raise ValueError(
+                    f"calendar schedule {schedule.get('id')} must use the timer adapter"
+                )
+            if not isinstance(config.get("calendar"), dict):
+                raise ValueError(f"schedule {schedule.get('id')} requires a calendar rule")
+            normalize_calendar_rule(config["calendar"])
+        elif schedule_kind == "interval":
+            if (
+                not isinstance(schedule.get("every_seconds"), int)
+                or schedule["every_seconds"] < 1
+            ):
+                raise ValueError(
+                    f"schedule {schedule.get('id')} requires a positive interval"
+                )
+        else:
             raise ValueError(
-                f"schedule {schedule.get('id')} requires a positive interval"
+                f"schedule {schedule.get('id')} has unsupported kind {schedule_kind}"
             )
         if config.get("space_id") not in space_ids:
             raise ValueError(
@@ -254,16 +269,19 @@ def export_topology(
         }
         for item in core.list_routes(db)
     ]
-    schedules = [
-        {
+    schedules = []
+    for item in core.list_schedules(db):
+        exported = {
             "id": item["id"],
             "adapter": item["adapter"],
-            "every_seconds": item["every_seconds"],
             "enabled": item["enabled"],
             "config": redact(item["config"]),
         }
-        for item in core.list_schedules(db)
-    ]
+        if item["schedule_kind"] == "calendar":
+            exported["schedule_kind"] = "calendar"
+        else:
+            exported["every_seconds"] = item["every_seconds"]
+        schedules.append(exported)
     bindings = [
         {
             "key": f"{item['space_id']}:{item['processor']}",
@@ -339,8 +357,11 @@ def _normalize(document: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]
         )
     for item in document.get("schedules", []):
         config = dict(item["config"])
+        schedule_kind = item.get("schedule_kind", "interval")
         if item["adapter"] == "timer":
             config.setdefault("attributes", {})
+            if schedule_kind == "calendar":
+                config["calendar"] = normalize_calendar_rule(config["calendar"])
         elif item["adapter"] == "ingest-shadow":
             config.setdefault("discovery_script", None)
             config.setdefault("timeout", 120)
@@ -356,7 +377,8 @@ def _normalize(document: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]
                 {
                     "id": item["id"],
                     "adapter": item["adapter"],
-                    "every_seconds": item["every_seconds"],
+                    "schedule_kind": schedule_kind,
+                    "every_seconds": item.get("every_seconds"),
                     "enabled": item.get("enabled", True),
                     "config": config,
                 },
@@ -442,6 +464,7 @@ def _actual(
             else {
                 "id": schedule["id"],
                 "adapter": schedule["adapter"],
+                "schedule_kind": schedule["schedule_kind"],
                 "every_seconds": schedule["every_seconds"],
                 "enabled": schedule["enabled"],
                 "config": schedule["config"],
@@ -548,6 +571,23 @@ def plan_topology(
 
 def _upsert_schedule(db: Database, desired: dict[str, Any]) -> dict[str, Any]:
     config = desired["config"]
+    if desired["schedule_kind"] == "calendar":
+        calendar = config["calendar"]
+        return core.upsert_calendar_schedule(
+            db,
+            desired["id"],
+            space_id=config["space_id"],
+            source_id=config["source_id"],
+            event_type=config["event_type"],
+            local_time=calendar["local_time"],
+            timezone=calendar["timezone"],
+            weekdays=calendar["weekdays"],
+            missed_policy=calendar["missed_policy"],
+            ambiguous_time_policy=calendar["ambiguous_time_policy"],
+            nonexistent_time_policy=calendar["nonexistent_time_policy"],
+            attributes=config.get("attributes"),
+            enabled=desired["enabled"],
+        )
     common = {"every_seconds": desired["every_seconds"], "enabled": desired["enabled"]}
     if desired["adapter"] == "ingest-shadow":
         return core.upsert_ingest_schedule(

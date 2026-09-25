@@ -41,6 +41,27 @@ class DoctorTest(unittest.TestCase):
             "schedule.path-missing", {item["code"] for item in result["findings"]}
         )
 
+    def test_calendar_schedule_uses_a_fixed_overdue_grace(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("switchboard.doctor.sys.platform", "linux"),
+        ):
+            db = Database(Path(directory) / "switchboard.sqlite3")
+            core.upsert_calendar_schedule(
+                db,
+                "daily",
+                space_id="demo",
+                source_id="timer/daily",
+                event_type="daily.due",
+                local_time="07:00",
+                timezone="Europe/Warsaw",
+                at="2026-09-24T04:00:00+00:00",
+            )
+            result = run_doctor(
+                db, now_at=datetime.fromisoformat("2026-09-24T07:00:01+00:00")
+            )
+        self.assertIn("schedule.overdue", {item["code"] for item in result["findings"]})
+
     def test_unclaimed_accepted_wake_is_a_warning(self) -> None:
         with (
             tempfile.TemporaryDirectory() as directory,

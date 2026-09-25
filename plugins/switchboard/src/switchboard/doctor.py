@@ -105,11 +105,16 @@ def run_doctor(db: Database, *, now_at: datetime | None = None) -> dict[str, Any
                 detail=schedule["last_error"],
             )
         next_run = _parse(schedule["next_run_at"])
+        overdue_seconds = (
+            3600
+            if schedule["schedule_kind"] == "calendar"
+            else max(60, schedule["every_seconds"] * 2)
+        )
         if (
             schedule["enabled"]
             and next_run
             and next_run
-            < checked_at - timedelta(seconds=max(60, schedule["every_seconds"] * 2))
+            < checked_at - timedelta(seconds=overdue_seconds)
         ):
             _finding(
                 findings,

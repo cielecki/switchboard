@@ -8,7 +8,8 @@ Each cycle:
 1. selects enabled adapter schedules whose `next_run_at` has arrived;
 2. starts each adapter in an independent worker and records completion or failure without blocking
    delivery, alerts, or other schedules;
-3. advances each schedule by its configured interval;
+3. advances interval schedules by their configured cadence, while calendar schedules preserve an
+   IANA-zone wall-clock rule and atomically persist the selected occurrence with their next cursor;
 4. recovers expired processor leases and materializes missing bound deliveries;
    accepted wakes that are not acknowledged or claimed within the configured timeout are re-armed
    with the same stable request ID, and legacy databases with multiple accepted wakes per consumer
@@ -45,6 +46,7 @@ An adapter failure remains visible on the episode but is not retried into a noti
 
 ```bash
 switchboard --json schedule list
+switchboard --json schedule preview work-inbox --from 2026-10-23T12:00:00+00:00
 switchboard --json schedule disable ingest
 switchboard --json schedule enable ingest
 switchboard --json schedule delete ingest
@@ -53,6 +55,12 @@ switchboard --json supervisor status
 
 Schedule configuration and supervisor health live in the external Switchboard database. Private
 paths and source data never belong in the plugin checkout.
+
+Calendar schedules support `catch-up-once` and `skip`. Catch-up selects the latest eligible missed
+occurrence and emits at most one event, even after long downtime. A material edit or re-enable
+increments the schedule revision and re-anchors it to the next future occurrence. Ambiguous and
+nonexistent local times use the explicit policies stored with the rule. Failed calendar execution
+does not advance `next_run_at`, so the supervisor can retry without losing the occurrence.
 
 ## Process model
 

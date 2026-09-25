@@ -35,7 +35,9 @@ owns no mutations. Delivery adapters wake agent hosts without taking ownership o
   or accepted but not claimed, followed by a recorded recovery after the final issue clears.
 - **Managed resource:** ownership record connecting one declarative topology to the resources it
   may reconcile without taking control of unrelated CLI-created state.
-- **Schedule:** CLI-managed cadence and private adapter configuration stored outside the plugin.
+- **Schedule:** CLI-managed interval cadence or IANA-zone wall-clock calendar rule, with private
+  adapter configuration stored outside the plugin. Calendar event insertion, routing, and cursor
+  advancement commit atomically.
 - **Supervisor:** single-instance loop that runs schedules, dispatches deliveries, records a
   heartbeat, and hosts read-only observability.
 
@@ -80,6 +82,11 @@ attempt reaches the transcript late.
 The supervisor never converts transport acceptance into task completion. It isolates adapter and
 delivery failures, advances schedules deterministically, and exposes its last heartbeat and error
 without making the web interface a control surface.
+
+Calendar triggers identify occurrences by schedule, server-managed revision, and scheduled UTC
+instant. After downtime, `catch-up-once` selects the latest eligible occurrence; `skip` advances
+past a multi-occurrence backlog without emitting it. Existing fixed-second interval schedules keep
+their prior anchored-UTC behavior.
 
 Topology, diagnosis, backup, and every other mutation or operational check remain CLI concerns.
 The read-only HTTP server does not expose an apply, repair, or restore endpoint.

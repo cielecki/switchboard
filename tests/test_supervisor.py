@@ -211,6 +211,129 @@ class SupervisorTest(unittest.TestCase):
         schedule = core.get_schedule(self.db, "daily")
         self.assertEqual(schedule["next_run_at"], "2026-09-22T21:50:00+00:00")
 
+    def test_calendar_schedule_catches_up_only_latest_missed_occurrence(self) -> None:
+        created = core.upsert_calendar_schedule(
+            self.db,
+            "weekday-inbox",
+            space_id="inbox",
+            source_id="timer/weekday-inbox",
+            event_type="inbox.sweep.due",
+            local_time="07:00",
+            timezone="Europe/Warsaw",
+            weekdays=["mon", "tue", "wed", "thu", "fri"],
+            at="2026-09-20T12:00:00+00:00",
+        )
+        self.assertEqual(created["next_run_at"], "2026-09-21T05:00:00+00:00")
+
+        result = run_cycle(
+            self.db,
+            relay=None,
+            cli_command=["switchboard"],
+            at=datetime.fromisoformat("2026-09-24T12:00:00+00:00"),
+        )
+
+        self.assertEqual(result["schedules"][0]["state"], "completed")
+        events = core.list_events(self.db)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["occurred_at"], "2026-09-24T05:00:00+00:00")
+        self.assertEqual(events[0]["attributes"]["late_by_seconds"], 7 * 3600)
+        schedule = core.get_schedule(self.db, "weekday-inbox")
+        self.assertEqual(schedule["next_run_at"], "2026-09-25T05:00:00+00:00")
+        self.assertEqual(schedule["last_scheduled_for"], "2026-09-24T05:00:00+00:00")
+
+    def test_calendar_skip_policy_advances_without_emitting_old_backlog(self) -> None:
+        core.upsert_calendar_schedule(
+            self.db,
+            "skip-old",
+            space_id="inbox",
+            source_id="timer/skip-old",
+            event_type="inbox.sweep.due",
+            local_time="07:00",
+            timezone="Europe/Warsaw",
+            weekdays=["mon", "tue", "wed", "thu", "fri"],
+            missed_policy="skip",
+            at="2026-09-20T12:00:00+00:00",
+        )
+
+        result = core.execute_due_calendar_schedule(
+            self.db, "skip-old", triggered_at="2026-09-24T12:00:00+00:00"
+        )
+
+        self.assertEqual(result["run"]["emitted_events"], 0)
+        self.assertEqual(core.list_events(self.db), [])
+        self.assertEqual(
+            core.get_schedule(self.db, "skip-old")["next_run_at"],
+            "2026-09-25T05:00:00+00:00",
+        )
+
+    def test_identical_calendar_upsert_preserves_revision_and_next_run(self) -> None:
+        arguments = {
+            "space_id": "inbox",
+            "source_id": "timer/inbox",
+            "event_type": "inbox.sweep.due",
+            "local_time": "07:00",
+            "timezone": "Europe/Warsaw",
+            "weekdays": ["mon", "tue", "wed", "thu", "fri"],
+        }
+        first = core.upsert_calendar_schedule(
+            self.db, "inbox", **arguments, at="2026-09-20T12:00:00+00:00"
+        )
+        second = core.upsert_calendar_schedule(
+            self.db, "inbox", **arguments, at="2026-09-22T12:00:00+00:00"
+        )
+        changed = core.upsert_calendar_schedule(
+            self.db,
+            "inbox",
+            **{**arguments, "local_time": "08:00"},
+            at="2026-09-22T12:00:00+00:00",
+        )
+
+        self.assertEqual(second["revision"], first["revision"])
+        self.assertEqual(second["next_run_at"], first["next_run_at"])
+        self.assertEqual(changed["revision"], first["revision"] + 1)
+        self.assertEqual(changed["next_run_at"], "2026-09-23T06:00:00+00:00")
+
+    def test_calendar_failure_does_not_advance_or_leave_event(self) -> None:
+        created = core.upsert_calendar_schedule(
+            self.db,
+            "atomic",
+            space_id="inbox",
+            source_id="timer/atomic",
+            event_type="inbox.sweep.due",
+            local_time="07:00",
+            timezone="Europe/Warsaw",
+            at="2026-09-20T12:00:00+00:00",
+        )
+        core.create_space(self.db, "inbox")
+        with self.db.transaction() as connection:
+            connection.execute(
+                "INSERT INTO routes(id, space_id, name, predicate_json, target_json, state, "
+                "created_at, updated_at) VALUES(?,?,?,?,?,'enabled',?,?)",
+                (
+                    "bad-route",
+                    "inbox",
+                    "Bad",
+                    '{}',
+                    '{"kind":"unknown"}',
+                    "2026-09-20T12:00:00+00:00",
+                    "2026-09-20T12:00:00+00:00",
+                ),
+            )
+
+        result = run_cycle(
+            self.db,
+            relay=None,
+            cli_command=["switchboard"],
+            at=datetime.fromisoformat("2026-09-21T06:00:00+00:00"),
+        )
+
+        self.assertEqual(result["schedules"][0]["state"], "failed")
+        self.assertEqual(core.list_events(self.db), [])
+        schedule = core.get_schedule(self.db, "atomic")
+        self.assertEqual(schedule["next_run_at"], created["next_run_at"])
+        self.assertEqual(schedule["last_state"], "failed")
+        self.assertEqual(core.list_adapter_runs(self.db)[0]["state"], "failed")
+
     def test_once_records_a_clean_supervisor_stop(self) -> None:
         result = run_once(self.db, relay=None, cli_command=["switchboard"])
 

@@ -21,6 +21,16 @@ class WebTest(unittest.TestCase):
         self.db = Database(Path(self.directory.name) / "switchboard.sqlite3")
         core.create_space(self.db, "test-space", "Test space")
         core.register_source(self.db, "test-source", "test-space", "test")
+        core.upsert_calendar_schedule(
+            self.db,
+            "daily",
+            space_id="test-space",
+            source_id="test-source",
+            event_type="daily.due",
+            local_time="07:00",
+            timezone="Europe/Warsaw",
+            at="2026-09-24T04:00:00+00:00",
+        )
         core.start_adapter_run(self.db, "test-adapter")
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self.db))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -55,7 +65,8 @@ class WebTest(unittest.TestCase):
 
         with urllib.request.urlopen(f"{self.base_url}/api/schedules") as response:
             schedules = json.load(response)
-        self.assertEqual(schedules, [])
+        self.assertEqual(schedules[0]["schedule_kind"], "calendar")
+        self.assertEqual(schedules[0]["next_run_local"], "2026-09-24T07:00:00+02:00")
 
         with urllib.request.urlopen(f"{self.base_url}/api/routes") as response:
             routes = json.load(response)

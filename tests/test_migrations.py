@@ -9,6 +9,51 @@ from switchboard.db import SCHEMA_VERSION, Database
 
 
 class MigrationTest(unittest.TestCase):
+    def test_v8_interval_schedules_migrate_to_calendar_capable_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "switchboard.sqlite3"
+            db = Database(path)
+            db.initialize()
+            with sqlite3.connect(path) as connection:
+                connection.execute("DROP INDEX idx_adapter_schedules_due")
+                connection.execute("ALTER TABLE adapter_schedules RENAME TO schedules_v9")
+                connection.execute(
+                    "CREATE TABLE adapter_schedules ("
+                    "id TEXT PRIMARY KEY, adapter TEXT NOT NULL, config_json TEXT NOT NULL, "
+                    "every_seconds INTEGER NOT NULL CHECK(every_seconds > 0), "
+                    "enabled INTEGER NOT NULL DEFAULT 1, next_run_at TEXT NOT NULL, "
+                    "last_started_at TEXT, last_finished_at TEXT, last_state TEXT, last_error TEXT, "
+                    "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+                )
+                timestamp = "2026-09-24T10:00:00+00:00"
+                connection.execute(
+                    "INSERT INTO adapter_schedules VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        "daily",
+                        "timer",
+                        '{}',
+                        86400,
+                        1,
+                        timestamp,
+                        None,
+                        None,
+                        None,
+                        None,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                connection.execute("DROP TABLE schedules_v9")
+                connection.execute("UPDATE schema_meta SET value='8' WHERE key='schema_version'")
+
+            Database(path).initialize()
+
+            row = Database(path).row("SELECT * FROM adapter_schedules WHERE id='daily'")
+            self.assertEqual(row["schedule_kind"], "interval")
+            self.assertEqual(row["every_seconds"], 86400)
+            self.assertEqual(row["revision"], 1)
+            self.assertIn("last_scheduled_for", row)
+
     def test_v7_review_backfill_groups_shared_decision_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "switchboard.sqlite3"

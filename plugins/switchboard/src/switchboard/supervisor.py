@@ -104,6 +104,22 @@ def _execute_schedule(
     timer_runner: Callable[..., dict[str, Any]] = run_timer,
     started_at: str | None = None,
 ) -> dict[str, Any]:
+    if schedule.get("schedule_kind") == "calendar":
+        try:
+            return core.execute_due_calendar_schedule(
+                db, schedule["id"], triggered_at=started_at or core.now()
+            )
+        except Exception as exc:  # noqa: BLE001 - one source must not stop the coordinator
+            detail = str(exc)
+            terminal = core.mark_calendar_schedule_failed(
+                db, schedule["id"], detail, failed_at=core.now()
+            )
+            return {
+                "id": schedule["id"],
+                "state": "failed",
+                "error": detail,
+                "schedule": terminal,
+            }
     core.mark_schedule_started(db, schedule["id"], started_at or core.now())
     try:
         config = schedule["config"]

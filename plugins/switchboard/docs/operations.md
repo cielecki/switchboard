@@ -27,6 +27,11 @@ Repeated apply is a no-op when the database already matches. `--prune` disables 
 bindings, and sources omitted by their owner. It retains spaces because they may anchor durable
 events. Resources created by another owner or manually with different settings produce a conflict.
 
+An interval schedule keeps the existing `every_seconds` form. A calendar schedule uses
+`"schedule_kind":"calendar"`, omits `every_seconds`, and stores its normalized rule under
+`config.calendar`. Export preserves this distinction, and repeated apply does not reset a calendar
+schedule's next occurrence or revision.
+
 Topology files may contain machine-local paths and chat identifiers after variables are resolved.
 Keep live documents private. Public repositories should contain only generic templates.
 

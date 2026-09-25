@@ -123,6 +123,38 @@ class TopologyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing topology variables"):
             load_topology(path, {})
 
+    def test_calendar_schedule_round_trips_and_applies_idempotently(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        document["schedules"][0] = {
+            "id": "weekday",
+            "adapter": "timer",
+            "schedule_kind": "calendar",
+            "enabled": True,
+            "config": {
+                "space_id": "demo",
+                "source_id": "timer/demo",
+                "event_type": "maintenance.due",
+                "calendar": {
+                    "local_time": "07:00",
+                    "timezone": "Europe/Warsaw",
+                    "weekdays": ["mon", "tue", "wed", "thu", "fri"],
+                    "missed_policy": "catch-up-once",
+                    "ambiguous_time_policy": "first",
+                    "nonexistent_time_policy": "next-valid",
+                },
+            },
+        }
+
+        first = apply_topology(self.db, document)
+        second = apply_topology(self.db, document)
+        exported = export_topology(self.db, include_local_values=True)
+
+        self.assertEqual(first["conflicts"], 0)
+        self.assertTrue(all(item["action"] == "noop" for item in second["operations"]))
+        schedule = next(item for item in exported["schedules"] if item["id"] == "weekday")
+        self.assertEqual(schedule["schedule_kind"], "calendar")
+        self.assertNotIn("every_seconds", schedule)
+
     def test_prune_disables_missing_managed_resources_but_retains_space(self) -> None:
         apply_topology(self.db, self.document)
         empty = {"schema_version": 1, "owner": "example"}

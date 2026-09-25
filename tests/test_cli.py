@@ -158,6 +158,64 @@ class CliTest(unittest.TestCase):
 
         self.assertIsNone(self.run_cli("supervisor", "status"))
 
+    def test_calendar_schedule_add_preview_and_update(self) -> None:
+        created = self.run_cli(
+            "schedule",
+            "add-calendar",
+            "work-inbox",
+            "--space",
+            "work-inbox",
+            "--source",
+            "timer/work-inbox",
+            "--event-type",
+            "inbox.sweep.due",
+            "--at",
+            "07:00",
+            "--timezone",
+            "Europe/Warsaw",
+            "--weekdays",
+            "mon,tue,wed",
+            "--weekdays",
+            "thu,fri",
+        )
+        preview = self.run_cli(
+            "schedule",
+            "preview",
+            "work-inbox",
+            "--from",
+            "2026-09-24T12:00:00+00:00",
+            "--count",
+            "2",
+        )
+        updated = self.run_cli(
+            "schedule",
+            "update-calendar",
+            "work-inbox",
+            "--space",
+            "work-inbox",
+            "--source",
+            "timer/work-inbox",
+            "--event-type",
+            "inbox.sweep.due",
+            "--at",
+            "08:00",
+            "--timezone",
+            "Europe/Warsaw",
+            "--weekdays",
+            "mon,tue,wed,thu,fri",
+        )
+
+        self.assertEqual(created["schedule_kind"], "calendar")
+        self.assertEqual(
+            created["config"]["calendar"]["weekdays"],
+            ["mon", "tue", "wed", "thu", "fri"],
+        )
+        self.assertEqual(
+            [item["scheduled_for"] for item in preview["occurrences"]],
+            ["2026-09-25T05:00:00+00:00", "2026-09-28T05:00:00+00:00"],
+        )
+        self.assertEqual(updated["revision"], created["revision"] + 1)
+
     def test_json_reports_database_errors_instead_of_a_traceback(self) -> None:
         # A directory cannot be opened as a database, which sqlite3 reports as an
         # OperationalError, the same class as "database is locked".

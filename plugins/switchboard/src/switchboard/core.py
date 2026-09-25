@@ -11,7 +11,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
+from .calendar_schedule import (
+    due_occurrences,
+    next_occurrence,
+    normalize_calendar_rule,
+    preview_occurrences,
+)
 from .db import SCHEMA_VERSION, Database, decode_json_fields
 
 
@@ -230,7 +237,8 @@ def upsert_ingest_schedule(
             "INSERT INTO adapter_schedules(id, adapter, config_json, every_seconds, enabled, "
             "next_run_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, "
-            "config_json=excluded.config_json, every_seconds=excluded.every_seconds, "
+            "config_json=excluded.config_json, schedule_kind='interval', "
+            "every_seconds=excluded.every_seconds, "
             "enabled=excluded.enabled, next_run_at=excluded.next_run_at, "
             "updated_at=excluded.updated_at",
             (
@@ -318,7 +326,8 @@ def upsert_inbound_schedule(
             "INSERT INTO adapter_schedules(id, adapter, config_json, every_seconds, enabled, "
             "next_run_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, "
-            "config_json=excluded.config_json, every_seconds=excluded.every_seconds, "
+            "config_json=excluded.config_json, schedule_kind='interval', "
+            "every_seconds=excluded.every_seconds, "
             "enabled=excluded.enabled, next_run_at=excluded.next_run_at, "
             "updated_at=excluded.updated_at",
             (
@@ -383,10 +392,12 @@ def upsert_timer_schedule(
     db.initialize()
     with db.transaction() as connection:
         connection.execute(
-            "INSERT INTO adapter_schedules(id, adapter, config_json, every_seconds, enabled, "
-            "next_run_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?) "
+            "INSERT INTO adapter_schedules(id, adapter, config_json, schedule_kind, "
+            "every_seconds, enabled, next_run_at, created_at, updated_at) "
+            "VALUES(?,?,?,'interval',?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET adapter=excluded.adapter, "
-            "config_json=excluded.config_json, every_seconds=excluded.every_seconds, "
+            "config_json=excluded.config_json, schedule_kind='interval', "
+            "every_seconds=excluded.every_seconds, "
             "enabled=excluded.enabled, next_run_at=excluded.next_run_at, "
             "updated_at=excluded.updated_at",
             (
@@ -418,13 +429,129 @@ def upsert_timer_schedule(
     return get_schedule(db, schedule_id)
 
 
+def upsert_calendar_schedule(
+    db: Database,
+    schedule_id: str,
+    *,
+    space_id: str,
+    source_id: str,
+    event_type: str,
+    local_time: str,
+    timezone: str,
+    weekdays: list[str] | None = None,
+    missed_policy: str = "catch-up-once",
+    ambiguous_time_policy: str = "first",
+    nonexistent_time_policy: str = "next-valid",
+    attributes: dict[str, Any] | None = None,
+    enabled: bool = True,
+    at: str | None = None,
+) -> dict[str, Any]:
+    if not all(value.strip() for value in (schedule_id, space_id, source_id, event_type)):
+        raise ValueError("calendar schedule id, space, source, and event type cannot be empty")
+    rule = normalize_calendar_rule(
+        {
+            "local_time": local_time,
+            "timezone": timezone,
+            "weekdays": (
+                weekdays
+                if weekdays is not None
+                else list(("mon", "tue", "wed", "thu", "fri", "sat", "sun"))
+            ),
+            "missed_policy": missed_policy,
+            "ambiguous_time_policy": ambiguous_time_policy,
+            "nonexistent_time_policy": nonexistent_time_policy,
+        }
+    )
+    timestamp = at or now()
+    instant = datetime.fromisoformat(timestamp)
+    if instant.tzinfo is None:
+        raise ValueError("calendar anchor must include a timezone")
+    timestamp = instant.astimezone(UTC).isoformat()
+    config = {
+        "space_id": space_id,
+        "source_id": source_id,
+        "event_type": event_type,
+        "attributes": attributes or {},
+        "calendar": rule,
+    }
+    encoded = json.dumps(config, sort_keys=True)
+    db.initialize()
+    with db.transaction() as connection:
+        existing = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        if existing is None:
+            revision = 1
+            next_run_at = next_occurrence(rule, instant).isoformat()
+            connection.execute(
+                "INSERT INTO adapter_schedules(id, adapter, config_json, schedule_kind, "
+                "every_seconds, revision, enabled, next_run_at, created_at, updated_at) "
+                "VALUES(?,?,?,'calendar',NULL,?,?,?,?,?)",
+                (
+                    schedule_id,
+                    "timer",
+                    encoded,
+                    revision,
+                    int(enabled),
+                    next_run_at,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        else:
+            material_change = (
+                existing["adapter"] != "timer"
+                or existing["schedule_kind"] != "calendar"
+                or existing["config_json"] != encoded
+            )
+            enabling = not bool(existing["enabled"]) and enabled
+            revision = existing["revision"] + int(material_change or enabling)
+            reanchor = material_change or enabling
+            next_run_at = (
+                next_occurrence(rule, instant).isoformat()
+                if reanchor
+                else existing["next_run_at"]
+            )
+            connection.execute(
+                "UPDATE adapter_schedules SET adapter='timer', config_json=?, "
+                "schedule_kind='calendar', every_seconds=NULL, revision=?, enabled=?, "
+                "next_run_at=?, updated_at=? WHERE id=?",
+                (encoded, revision, int(enabled), next_run_at, timestamp, schedule_id),
+            )
+        audit(
+            connection,
+            command="schedule.upsert-calendar",
+            entity_type="adapter_schedule",
+            entity_id=schedule_id,
+            payload={
+                "space_id": space_id,
+                "source_id": source_id,
+                "event_type": event_type,
+                "calendar": rule,
+                "enabled": enabled,
+                "revision": revision,
+            },
+        )
+    return get_schedule(db, schedule_id)
+
+
+def _present_schedule(schedule: dict[str, Any]) -> dict[str, Any]:
+    result = decode_json_fields(schedule, "config_json")
+    result["enabled"] = bool(result["enabled"])
+    if result.get("schedule_kind") == "calendar":
+        rule = result["config"]["calendar"]
+        zone = ZoneInfo(rule["timezone"])
+        result["next_run_local"] = datetime.fromisoformat(result["next_run_at"]).astimezone(
+            zone
+        ).isoformat()
+    return result
+
+
 def get_schedule(db: Database, schedule_id: str) -> dict[str, Any]:
     row = db.row("SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,))
     if row is None:
         raise ValueError(f"schedule not found: {schedule_id}")
-    schedule = decode_json_fields(row, "config_json")
-    schedule["enabled"] = bool(schedule["enabled"])
-    return schedule
+    return _present_schedule(row)
 
 
 def list_schedules(db: Database, *, enabled: bool | None = None) -> list[dict[str, Any]]:
@@ -434,21 +561,32 @@ def list_schedules(db: Database, *, enabled: bool | None = None) -> list[dict[st
         query += " WHERE enabled=?"
         params = (int(enabled),)
     query += " ORDER BY id"
-    schedules = [decode_json_fields(row, "config_json") for row in db.rows(query, params)]
-    for schedule in schedules:
-        schedule["enabled"] = bool(schedule["enabled"])
-    return schedules
+    return [_present_schedule(row) for row in db.rows(query, params)]
 
 
 def set_schedule_enabled(db: Database, schedule_id: str, enabled: bool) -> dict[str, Any]:
     timestamp = now()
     with db.transaction() as connection:
-        changed = connection.execute(
-            "UPDATE adapter_schedules SET enabled=?, next_run_at=?, updated_at=? WHERE id=?",
-            (int(enabled), timestamp, timestamp, schedule_id),
-        ).rowcount
-        if not changed:
+        schedule = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        if schedule is None:
             raise ValueError(f"schedule not found: {schedule_id}")
+        revision = schedule["revision"]
+        next_run_at = timestamp
+        if schedule["schedule_kind"] == "calendar":
+            next_run_at = schedule["next_run_at"]
+            if enabled and not bool(schedule["enabled"]):
+                config = json.loads(schedule["config_json"])
+                next_run_at = next_occurrence(
+                    config["calendar"], datetime.fromisoformat(timestamp)
+                ).isoformat()
+                revision += 1
+        connection.execute(
+            "UPDATE adapter_schedules SET enabled=?, revision=?, next_run_at=?, updated_at=? "
+            "WHERE id=?",
+            (int(enabled), revision, next_run_at, timestamp, schedule_id),
+        )
         audit(
             connection,
             command="schedule.enable" if enabled else "schedule.disable",
@@ -479,16 +617,38 @@ def delete_schedule(db: Database, schedule_id: str) -> dict[str, Any]:
 def due_schedules(db: Database, at: str | None = None) -> list[dict[str, Any]]:
     timestamp = at or now()
     schedules = [
-        decode_json_fields(row, "config_json")
+        _present_schedule(row)
         for row in db.rows(
             "SELECT * FROM adapter_schedules WHERE enabled=1 AND next_run_at<=? "
             "ORDER BY next_run_at, id",
             (timestamp,),
         )
     ]
-    for schedule in schedules:
-        schedule["enabled"] = True
     return schedules
+
+
+def preview_calendar_schedule(
+    db: Database, schedule_id: str, *, at: str | None = None, count: int = 5
+) -> dict[str, Any]:
+    schedule = get_schedule(db, schedule_id)
+    if schedule["schedule_kind"] != "calendar":
+        raise ValueError(f"schedule {schedule_id} is not a calendar schedule")
+    timestamp = datetime.fromisoformat(at or now())
+    occurrences = preview_occurrences(schedule["config"]["calendar"], timestamp, count=count)
+    timezone = schedule["config"]["calendar"]["timezone"]
+    zone = ZoneInfo(timezone)
+    return {
+        "id": schedule_id,
+        "timezone": timezone,
+        "from": timestamp.astimezone(UTC).isoformat(),
+        "occurrences": [
+            {
+                "scheduled_for": item.isoformat(),
+                "scheduled_for_local": item.astimezone(zone).isoformat(),
+            }
+            for item in occurrences
+        ],
+    }
 
 
 def mark_schedule_started(db: Database, schedule_id: str, started_at: str | None = None) -> None:
@@ -512,6 +672,8 @@ def mark_schedule_finished(
         raise ValueError("schedule state must be completed or failed")
     timestamp = finished_at or now()
     schedule = get_schedule(db, schedule_id)
+    if schedule["schedule_kind"] != "interval":
+        raise ValueError("calendar schedules must be advanced atomically")
     finished = datetime.fromisoformat(timestamp)
     cadence_base = (
         datetime.fromisoformat(schedule["next_run_at"])
@@ -527,6 +689,185 @@ def mark_schedule_finished(
             "UPDATE adapter_schedules SET last_finished_at=?, last_state=?, last_error=?, "
             "next_run_at=?, updated_at=? WHERE id=?",
             (timestamp, state, error, next_run_at, timestamp, schedule_id),
+        )
+    return get_schedule(db, schedule_id)
+
+
+def execute_due_calendar_schedule(
+    db: Database, schedule_id: str, *, triggered_at: str | None = None
+) -> dict[str, Any]:
+    db.initialize()
+    trigger = datetime.fromisoformat(triggered_at or now())
+    if trigger.tzinfo is None:
+        raise ValueError("calendar trigger time must include a timezone")
+    trigger = trigger.astimezone(UTC)
+    trigger_text = trigger.isoformat()
+    with db.transaction() as connection:
+        row = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"schedule not found: {schedule_id}")
+        if row["schedule_kind"] != "calendar":
+            raise ValueError(f"schedule {schedule_id} is not a calendar schedule")
+        if not row["enabled"]:
+            raise ValueError(f"schedule {schedule_id} is disabled")
+        first_due = datetime.fromisoformat(row["next_run_at"]).astimezone(UTC)
+        if first_due > trigger:
+            return {"id": schedule_id, "state": "not-due", "schedule": _present_schedule(dict(row))}
+
+        config = json.loads(row["config_json"])
+        rule = normalize_calendar_rule(config["calendar"])
+        occurrences = due_occurrences(rule, first_due, trigger)
+        if not occurrences:
+            raise ValueError(f"calendar schedule {schedule_id} has no due occurrence")
+        scheduled_for = occurrences[-1]
+        should_emit = rule["missed_policy"] == "catch-up-once" or len(occurrences) == 1
+        next_run_at = next_occurrence(rule, trigger).isoformat()
+        late_by = max(0, int((trigger - scheduled_for).total_seconds()))
+
+        space = connection.execute(
+            "SELECT * FROM spaces WHERE id=?", (config["space_id"],)
+        ).fetchone()
+        if space is None:
+            connection.execute(
+                "INSERT INTO spaces(id, name, created_at) VALUES(?,?,?)",
+                (config["space_id"], config["space_id"], trigger_text),
+            )
+        source = connection.execute(
+            "SELECT * FROM sources WHERE id=?", (config["source_id"],)
+        ).fetchone()
+        if source is None:
+            connection.execute(
+                "INSERT INTO sources(id, space_id, kind, state, config_json, created_at) "
+                "VALUES(?,?,?,'enabled','{}',?)",
+                (config["source_id"], config["space_id"], "timer", trigger_text),
+            )
+        elif source["space_id"] != config["space_id"] or source["kind"] != "timer":
+            raise ValueError(
+                f"source {config['source_id']} is already bound to "
+                f"{source['space_id']} / {source['kind']}"
+            )
+        connection.execute(
+            "INSERT INTO source_health(source_id, state, detail, observed_at) VALUES(?,?,?,?)",
+            (config["source_id"], "enabled", "calendar schedule", trigger_text),
+        )
+        connection.execute(
+            "UPDATE sources SET state='enabled' WHERE id=?", (config["source_id"],)
+        )
+
+        run_id = make_id("run")
+        emitted = 0
+        deduplicated = 0
+        event_result: dict[str, Any] | None = None
+        if should_emit:
+            attributes = dict(config.get("attributes") or {})
+            attributes.update(
+                {
+                    "schedule_id": schedule_id,
+                    "schedule_revision": row["revision"],
+                    "scheduled_for": scheduled_for.isoformat(),
+                    "triggered_at": trigger_text,
+                    "late_by_seconds": late_by,
+                }
+            )
+            event_result = _emit_event(
+                connection,
+                source_id=config["source_id"],
+                external_id=(
+                    f"schedule:{schedule_id}:r{row['revision']}:{scheduled_for.isoformat()}"
+                ),
+                event_type=config["event_type"],
+                attributes=attributes,
+                occurred_at=scheduled_for.isoformat(),
+                observed_at=trigger_text,
+            )
+            emitted = int(not event_result["deduplicated"])
+            deduplicated = int(event_result["deduplicated"])
+        detail = (
+            f"emitted occurrence {scheduled_for.isoformat()}"
+            if should_emit
+            else f"skipped {len(occurrences)} missed occurrences"
+        )
+        connection.execute(
+            "INSERT INTO adapter_runs(id, adapter, state, started_at, completed_at, "
+            "discovered_sources, emitted_events, deduplicated_events, detail) "
+            "VALUES(?,?,'completed',?,?,?,?,?,?)",
+            (
+                run_id,
+                "timer",
+                trigger_text,
+                trigger_text,
+                1,
+                emitted,
+                deduplicated,
+                detail,
+            ),
+        )
+        connection.execute(
+            "UPDATE adapter_schedules SET last_started_at=?, last_finished_at=?, "
+            "last_scheduled_for=?, last_triggered_at=?, last_late_by_seconds=?, "
+            "last_state='completed', last_error=NULL, next_run_at=?, updated_at=? WHERE id=?",
+            (
+                trigger_text,
+                trigger_text,
+                scheduled_for.isoformat(),
+                trigger_text,
+                late_by,
+                next_run_at,
+                trigger_text,
+                schedule_id,
+            ),
+        )
+        audit(
+            connection,
+            command="schedule.trigger-calendar",
+            entity_type="adapter_schedule",
+            entity_id=schedule_id,
+            payload={
+                "revision": row["revision"],
+                "scheduled_for": scheduled_for.isoformat(),
+                "triggered_at": trigger_text,
+                "late_by_seconds": late_by,
+                "missed_occurrences": len(occurrences),
+                "emitted": bool(should_emit),
+                "next_run_at": next_run_at,
+            },
+            actor="supervisor",
+        )
+    return {
+        "id": schedule_id,
+        "state": "completed",
+        "run": {
+            "id": run_id,
+            "adapter": "timer",
+            "state": "completed",
+            "emitted_events": emitted,
+            "deduplicated_events": deduplicated,
+            "detail": detail,
+        },
+        "event": event_result,
+        "schedule": get_schedule(db, schedule_id),
+    }
+
+
+def mark_calendar_schedule_failed(
+    db: Database, schedule_id: str, error: str, *, failed_at: str | None = None
+) -> dict[str, Any]:
+    timestamp = failed_at or now()
+    with db.transaction() as connection:
+        changed = connection.execute(
+            "UPDATE adapter_schedules SET last_started_at=?, last_finished_at=?, "
+            "last_state='failed', last_error=?, updated_at=? "
+            "WHERE id=? AND schedule_kind='calendar'",
+            (timestamp, timestamp, error, timestamp, schedule_id),
+        ).rowcount
+        if not changed:
+            raise ValueError(f"calendar schedule not found: {schedule_id}")
+        connection.execute(
+            "INSERT INTO adapter_runs(id, adapter, state, started_at, completed_at, detail) "
+            "VALUES(?,?,'failed',?,?,?)",
+            (make_id("run"), "timer", timestamp, timestamp, error),
         )
     return get_schedule(db, schedule_id)
 
@@ -891,118 +1232,122 @@ def _apply_routes(
     return [], []
 
 
-def emit_event(
-    db: Database,
+def _emit_event(
+    connection: sqlite3.Connection,
     *,
     source_id: str,
     external_id: str,
     event_type: str,
     attributes: dict[str, Any],
     occurred_at: str | None = None,
+    observed_at: str,
 ) -> dict[str, Any]:
-    db.initialize()
-    observed_at = now()
-    with db.transaction() as connection:
-        source = connection.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
-        if source is None:
-            raise ValueError(f"source not found: {source_id}")
+    source = connection.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
+    if source is None:
+        raise ValueError(f"source not found: {source_id}")
 
-        existing = connection.execute(
-            "SELECT * FROM events WHERE source_id=? AND external_id=?", (source_id, external_id)
-        ).fetchone()
-        if existing is not None:
-            return {
-                "event": decode_json_fields(dict(existing), "attributes_json"),
-                "deduplicated": True,
-                "matched_waits": [],
-                "deliveries": [],
-                "matched_routes": [],
-                "processor_runs": [],
-            }
+    existing = connection.execute(
+        "SELECT * FROM events WHERE source_id=? AND external_id=?", (source_id, external_id)
+    ).fetchone()
+    if existing is not None:
+        return {
+            "event": decode_json_fields(dict(existing), "attributes_json"),
+            "deduplicated": True,
+            "matched_waits": [],
+            "deliveries": [],
+            "matched_routes": [],
+            "processor_runs": [],
+        }
 
-        event_id = make_id("evt")
+    event_id = make_id("evt")
+    connection.execute(
+        "INSERT INTO events(id, space_id, source_id, external_id, event_type, occurred_at, "
+        "observed_at, attributes_json) VALUES(?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            source["space_id"],
+            source_id,
+            external_id,
+            event_type,
+            occurred_at,
+            observed_at,
+            json.dumps(attributes, sort_keys=True),
+        ),
+    )
+
+    waits = connection.execute(
+        "SELECT * FROM waits WHERE space_id=? AND state='active' ORDER BY created_at",
+        (source["space_id"],),
+    ).fetchall()
+    matched_waits: list[str] = []
+    deliveries: list[str] = []
+    for wait in waits:
+        if wait["expires_at"] and wait["expires_at"] <= observed_at:
+            connection.execute("UPDATE waits SET state='expired' WHERE id=?", (wait["id"],))
+            continue
+        predicate = json.loads(wait["predicate_json"])
+        matched, reason = predicate_matches(
+            predicate, source_id=source_id, event_type=event_type, attributes=attributes
+        )
+        if not matched:
+            continue
+        match_id = make_id("match")
+        delivery_id = make_id("dlv")
         connection.execute(
-            "INSERT INTO events(id, space_id, source_id, external_id, event_type, occurred_at, "
-            "observed_at, attributes_json) VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO matches(id, event_id, wait_id, matched_at, reason_json) VALUES(?,?,?,?,?)",
             (
+                match_id,
                 event_id,
-                source["space_id"],
-                source_id,
-                external_id,
-                event_type,
-                occurred_at,
+                wait["id"],
                 observed_at,
-                json.dumps(attributes, sort_keys=True),
+                json.dumps(reason, sort_keys=True),
             ),
         )
-
-        waits = connection.execute(
-            "SELECT * FROM waits WHERE space_id=? AND state='active' ORDER BY created_at",
-            (source["space_id"],),
-        ).fetchall()
-        matched_waits: list[str] = []
-        deliveries: list[str] = []
-        for wait in waits:
-            if wait["expires_at"] and wait["expires_at"] <= observed_at:
-                connection.execute("UPDATE waits SET state='expired' WHERE id=?", (wait["id"],))
-                continue
-            predicate = json.loads(wait["predicate_json"])
-            matched, reason = predicate_matches(
-                predicate, source_id=source_id, event_type=event_type, attributes=attributes
-            )
-            if not matched:
-                continue
-            match_id = make_id("match")
-            delivery_id = make_id("dlv")
-            connection.execute(
-                "INSERT INTO matches(id, event_id, wait_id, matched_at, reason_json) VALUES(?,?,?,?,?)",
-                (match_id, event_id, wait["id"], observed_at, json.dumps(reason, sort_keys=True)),
-            )
-            connection.execute(
-                "INSERT INTO deliveries(id, event_id, wait_id, consumer, idempotency_key, state, "
-                "created_at) VALUES(?,?,?,?,?,'pending',?)",
-                (
-                    delivery_id,
-                    event_id,
-                    wait["id"],
-                    wait["consumer"],
-                    f"{event_id}:{wait['id']}",
-                    observed_at,
-                ),
-            )
-            if wait["mode"] == "one-shot":
-                connection.execute(
-                    "UPDATE waits SET state='matched', matched_event_id=? WHERE id=?",
-                    (event_id, wait["id"]),
-                )
-            matched_waits.append(wait["id"])
-            deliveries.append(delivery_id)
-
-        matched_routes, processor_runs = _apply_routes(
-            connection,
-            event_id=event_id,
-            space_id=source["space_id"],
-            source_id=source_id,
-            event_type=event_type,
-            attributes=attributes,
-            matched_at=observed_at,
+        connection.execute(
+            "INSERT INTO deliveries(id, event_id, wait_id, consumer, idempotency_key, state, "
+            "created_at) VALUES(?,?,?,?,?,'pending',?)",
+            (
+                delivery_id,
+                event_id,
+                wait["id"],
+                wait["consumer"],
+                f"{event_id}:{wait['id']}",
+                observed_at,
+            ),
         )
+        if wait["mode"] == "one-shot":
+            connection.execute(
+                "UPDATE waits SET state='matched', matched_event_id=? WHERE id=?",
+                (event_id, wait["id"]),
+            )
+        matched_waits.append(wait["id"])
+        deliveries.append(delivery_id)
 
-        audit(
-            connection,
-            command="event.emit",
-            entity_type="event",
-            entity_id=event_id,
-            payload={
-                "source_id": source_id,
-                "external_id": external_id,
-                "event_type": event_type,
-                "matched_waits": matched_waits,
-                "matched_routes": matched_routes,
-                "processor_runs": processor_runs,
-            },
-            actor=f"source:{source_id}",
-        )
+    matched_routes, processor_runs = _apply_routes(
+        connection,
+        event_id=event_id,
+        space_id=source["space_id"],
+        source_id=source_id,
+        event_type=event_type,
+        attributes=attributes,
+        matched_at=observed_at,
+    )
+
+    audit(
+        connection,
+        command="event.emit",
+        entity_type="event",
+        entity_id=event_id,
+        payload={
+            "source_id": source_id,
+            "external_id": external_id,
+            "event_type": event_type,
+            "matched_waits": matched_waits,
+            "matched_routes": matched_routes,
+            "processor_runs": processor_runs,
+        },
+        actor=f"source:{source_id}",
+    )
 
     return {
         "event": {
@@ -1021,6 +1366,29 @@ def emit_event(
         "matched_routes": matched_routes,
         "processor_runs": processor_runs,
     }
+
+
+def emit_event(
+    db: Database,
+    *,
+    source_id: str,
+    external_id: str,
+    event_type: str,
+    attributes: dict[str, Any],
+    occurred_at: str | None = None,
+) -> dict[str, Any]:
+    db.initialize()
+    observed_at = now()
+    with db.transaction() as connection:
+        return _emit_event(
+            connection,
+            source_id=source_id,
+            external_id=external_id,
+            event_type=event_type,
+            attributes=attributes,
+            occurred_at=occurred_at,
+            observed_at=observed_at,
+        )
 
 
 def apply_routes_to_event(db: Database, event_id: str) -> dict[str, Any]:
@@ -2444,8 +2812,6 @@ def dispatch_processor_delivery(
         raise ValueError(
             f"processor run {delivery['processor_run_id']} is {delivery['run']['state']}, not pending"
         )
-    if processor_consumer_is_busy(db, delivery["consumer"], exclude_delivery=delivery_id):
-        raise ValueError(f"processor consumer {delivery['consumer']} already has in-flight work")
     binding = delivery.get("binding")
     if binding is None or binding["state"] != "enabled":
         raise ValueError(f"processor delivery {delivery_id} has no enabled binding")
@@ -2458,13 +2824,6 @@ def dispatch_processor_delivery(
     request_id = "msg_broker_" + hashlib.sha256(request_material.encode()).hexdigest()[:32]
     attempt_id = make_id("pdattempt")
     started_at = now()
-    with db.transaction() as connection:
-        connection.execute(
-            "INSERT INTO processor_delivery_attempts(id, delivery_id, request_id, state, "
-            "started_at) VALUES(?,?,?,'attempting',?)",
-            (attempt_id, delivery_id, request_id, started_at),
-        )
-
     command = [
         sys.executable,
         str(relay_path),
@@ -2482,6 +2841,50 @@ def dispatch_processor_delivery(
     ]
     if _relay_activates(client, activate_inactive or binding["activate_inactive"]):
         command.append("--activate-if-inactive")
+    with db.transaction() as connection:
+        current = connection.execute(
+            "SELECT pd.*, pr.state AS run_state, pb.state AS binding_state "
+            "FROM processor_deliveries pd "
+            "JOIN processor_runs pr ON pr.id=pd.processor_run_id "
+            "JOIN processor_bindings pb ON pb.id=pd.binding_id WHERE pd.id=?",
+            (delivery_id,),
+        ).fetchone()
+        if current is None:
+            raise ValueError(f"processor delivery not found: {delivery_id}")
+        if current["state"] in {"accepted", "acknowledged"}:
+            return {"id": delivery_id, "state": current["state"], "idempotent": True}
+        if current["state"] != "pending":
+            raise ValueError(
+                f"processor delivery {delivery_id} is {current['state']}, not pending"
+            )
+        if current["run_state"] != "pending":
+            raise ValueError(
+                f"processor run {current['processor_run_id']} is "
+                f"{current['run_state']}, not pending"
+            )
+        if current["binding_state"] != "enabled":
+            raise ValueError(f"processor delivery {delivery_id} has no enabled binding")
+        busy = connection.execute(
+            "SELECT 1 FROM processor_deliveries pd "
+            "JOIN processor_runs pr ON pr.id=pd.processor_run_id "
+            "WHERE pd.consumer=? AND pd.id<>? "
+            "AND (pd.state='accepted' OR pr.state='running') LIMIT 1",
+            (current["consumer"], delivery_id),
+        ).fetchone()
+        if busy is not None:
+            raise ValueError(
+                f"processor consumer {current['consumer']} already has in-flight work"
+            )
+        connection.execute(
+            "INSERT INTO processor_delivery_attempts(id, delivery_id, request_id, state, "
+            "started_at) VALUES(?,?,?,'attempting',?)",
+            (attempt_id, delivery_id, request_id, started_at),
+        )
+        connection.execute(
+            "UPDATE processor_deliveries SET state='accepted', accepted_at=?, last_error=NULL "
+            "WHERE id=? AND state='pending'",
+            (started_at, delivery_id),
+        )
 
     try:
         result = runner(
@@ -2506,7 +2909,7 @@ def dispatch_processor_delivery(
             )
             connection.execute(
                 "UPDATE processor_deliveries SET state='accepted', accepted_at=?, "
-                "last_error=NULL WHERE id=?",
+                "last_error=NULL WHERE id=? AND state='accepted'",
                 (finished_at, delivery_id),
             )
             audit(
@@ -2528,7 +2931,11 @@ def dispatch_processor_delivery(
                 (finished_at, error, attempt_id),
             )
             connection.execute(
-                "UPDATE processor_deliveries SET last_error=? WHERE id=?", (error, delivery_id)
+                "UPDATE processor_deliveries SET state='pending', accepted_at=NULL, last_error=? "
+                "WHERE id=? AND state='accepted' AND EXISTS ("
+                "SELECT 1 FROM processor_runs pr WHERE pr.id=processor_run_id "
+                "AND pr.state='pending')",
+                (error, delivery_id),
             )
     if error is not None:
         raise ValueError(error)

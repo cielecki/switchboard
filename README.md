@@ -28,7 +28,8 @@ The first vertical slice provides:
 - consumer-level unreachable and recovery alert episodes through a configurable local command;
 - a dedicated inbound-leads adapter that stores pointers and state, never message bodies;
 - independently executing schedules with descendant-safe timeouts;
-- deterministic timer events, grouped human-review resolution, and space-filtered queue views;
+- deterministic interval and local wall-clock calendar events, grouped human-review resolution,
+  and space-filtered queue views;
 - an action-oriented dashboard with worker health, decision groups, queue lanes, and run lifecycles;
 - declarative topology planning and idempotent apply through the CLI;
 - self-diagnosis plus verified online SQLite backups.
@@ -235,6 +236,26 @@ switchboard --json schedule add-timer nina-daily \
   --event-type inbound.maintenance.due --every 86400 \
   --first-run-at 2026-09-21T23:50:00+02:00
 ```
+
+For work that must stay at the same local clock time across daylight-saving changes, use a calendar
+schedule. Weekdays may be comma-separated or repeated:
+
+```bash
+switchboard --json schedule add-calendar work-inbox \
+  --space inbox --source timer/work-inbox --event-type inbox.triage.due \
+  --at 09:00 --timezone Europe/Warsaw --weekdays mon,tue,wed,thu,fri \
+  --attributes '{"profile":"work"}'
+switchboard --json schedule preview work-inbox \
+  --from 2026-10-23T12:00:00+00:00 --count 5
+```
+
+The default `catch-up-once` policy emits only the latest missed occurrence after downtime and then
+advances to the first future occurrence. `--missed-policy skip` suppresses a multi-occurrence
+backlog. Ambiguous local times default to the first instant; nonexistent times move to the first
+valid minute after the clock gap. These policies are explicit CLI options. Updating or re-enabling
+a calendar schedule starts a new revision and re-anchors it in the future. Event persistence,
+routing, and schedule advancement share one transaction, so a crash cannot advance past work that
+was not recorded.
 
 On macOS, install it as a persistent per-user launch agent entirely through the CLI:
 

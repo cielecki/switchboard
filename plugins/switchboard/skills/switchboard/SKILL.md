@@ -109,6 +109,14 @@ Use `schedule add-timer` for deterministic recurring maintenance wakes whose pol
 destination skill. `--first-run-at` requires an ISO timestamp with timezone; timer cadence remains
 anchored to that timestamp rather than drifting with execution duration.
 
+Use `schedule add-calendar` when a trigger must remain at a local wall-clock time across daylight-
+saving changes or run only on selected weekdays. Always provide an IANA timezone and inspect the
+result with `schedule preview <id> --from <ISO timestamp>`. The default `catch-up-once` emits only
+the latest eligible missed occurrence after downtime; `skip` drops a backlog when more than one
+occurrence is due. Use `schedule update-calendar` for material edits. Updates and re-enables create
+a new revision and start from the next future occurrence, so do not expect disabled periods to be
+backfilled.
+
 Manage recurring adapters only through `schedule` commands. `supervisor once` is appropriate for a
 verified manual cycle; `service install` manages the persistent macOS launch agent. Do not edit the
 database, launchd plist, or supervisor lock file directly. The web dashboard remains read-only and

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -497,6 +498,59 @@ class ProcessorDeliveryTest(unittest.TestCase):
         consumers = core.list_processor_consumers(self.db)
         self.assertEqual(consumers[0]["status"], "waiting-for-claim")
         self.assertEqual(consumers[0]["backlog"], 2)
+
+    def test_concurrent_dispatch_reserves_consumer_before_calling_relay(self) -> None:
+        worker = "chat:claude:session-1"
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer=worker,
+        )
+        self.emit("message-1")
+        self.emit("message-2")
+        deliveries = list(reversed(core.list_processor_deliveries(self.db)))
+        relay = self.root / "send-message.py"
+        relay.touch()
+        first_entered_relay = threading.Event()
+        release_first = threading.Event()
+        relay_calls: list[str] = []
+        outcomes: list[object] = []
+
+        def runner(command, **_kwargs):
+            relay_calls.append(command[command.index("--request-id") + 1])
+            first_entered_relay.set()
+            release_first.wait(2)
+            return SimpleNamespace(returncode=0, stdout="accepted", stderr="")
+
+        def dispatch(delivery_id: str) -> None:
+            try:
+                outcomes.append(
+                    core.dispatch_processor_delivery(
+                        self.db,
+                        delivery_id,
+                        relay=relay,
+                        cli_command=["switchboard"],
+                        runner=runner,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - asserted below
+                outcomes.append(exc)
+
+        first = threading.Thread(target=dispatch, args=(deliveries[0]["id"],))
+        first.start()
+        self.assertTrue(first_entered_relay.wait(1))
+        second = threading.Thread(target=dispatch, args=(deliveries[1]["id"],))
+        second.start()
+        second.join(1)
+        release_first.set()
+        first.join(1)
+
+        self.assertEqual(len(relay_calls), 1)
+        self.assertEqual(len(outcomes), 2)
+        errors = [item for item in outcomes if isinstance(item, Exception)]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("already has in-flight work", str(errors[0]))
 
     def test_upgrade_coalesces_old_accepted_wakes_into_one(self) -> None:
         worker = "chat:claude:session-1"

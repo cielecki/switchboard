@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -248,11 +248,16 @@ CREATE TABLE IF NOT EXISTS adapter_schedules (
     id TEXT PRIMARY KEY,
     adapter TEXT NOT NULL,
     config_json TEXT NOT NULL,
-    every_seconds INTEGER NOT NULL CHECK(every_seconds > 0),
+    schedule_kind TEXT NOT NULL DEFAULT 'interval' CHECK(schedule_kind IN ('interval', 'calendar')),
+    every_seconds INTEGER CHECK(every_seconds IS NULL OR every_seconds > 0),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
     enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
     next_run_at TEXT NOT NULL,
     last_started_at TEXT,
     last_finished_at TEXT,
+    last_scheduled_for TEXT,
+    last_triggered_at TEXT,
+    last_late_by_seconds INTEGER,
     last_state TEXT CHECK(last_state IS NULL OR last_state IN ('completed', 'failed')),
     last_error TEXT,
     created_at TEXT NOT NULL,
@@ -433,6 +438,46 @@ def migrate(connection: sqlite3.Connection) -> None:
     for name in ("label", "url"):
         if binding_columns and name not in binding_columns:
             connection.execute(f"ALTER TABLE processor_bindings ADD COLUMN {name} TEXT")
+    schedule_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(adapter_schedules)").fetchall()
+    }
+    if schedule_columns and "schedule_kind" not in schedule_columns:
+        connection.executescript(
+            """
+            ALTER TABLE adapter_schedules RENAME TO adapter_schedules_v8;
+            CREATE TABLE adapter_schedules (
+                id TEXT PRIMARY KEY,
+                adapter TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                schedule_kind TEXT NOT NULL DEFAULT 'interval'
+                    CHECK(schedule_kind IN ('interval', 'calendar')),
+                every_seconds INTEGER CHECK(every_seconds IS NULL OR every_seconds > 0),
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                next_run_at TEXT NOT NULL,
+                last_started_at TEXT,
+                last_finished_at TEXT,
+                last_scheduled_for TEXT,
+                last_triggered_at TEXT,
+                last_late_by_seconds INTEGER,
+                last_state TEXT CHECK(last_state IS NULL OR last_state IN ('completed', 'failed')),
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO adapter_schedules(
+                id, adapter, config_json, schedule_kind, every_seconds, revision,
+                enabled, next_run_at, last_started_at, last_finished_at,
+                last_state, last_error, created_at, updated_at
+            )
+            SELECT id, adapter, config_json, 'interval', every_seconds, 1,
+                   enabled, next_run_at, last_started_at, last_finished_at,
+                   last_state, last_error, created_at, updated_at
+            FROM adapter_schedules_v8;
+            DROP TABLE adapter_schedules_v8;
+            """
+        )
     connection.executescript(SCHEMA)
     _backfill_review_groups(connection)
     connection.commit()

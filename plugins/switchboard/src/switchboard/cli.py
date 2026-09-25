@@ -64,6 +64,39 @@ def add_list_filter(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state")
 
 
+def calendar_weekdays(values: list[str] | None) -> list[str] | None:
+    if not values:
+        return None
+    return [item.strip() for value in values for item in value.split(",") if item.strip()]
+
+
+def add_calendar_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("id")
+    parser.add_argument("--space", required=True)
+    parser.add_argument("--source", required=True)
+    parser.add_argument("--event-type", required=True)
+    parser.add_argument("--at", required=True, help="local wall-clock time in HH:MM")
+    parser.add_argument(
+        "--timezone", required=True, help="IANA timezone, for example Europe/Warsaw"
+    )
+    parser.add_argument(
+        "--weekdays",
+        action="append",
+        help="comma-separated or repeatable weekdays; defaults to every day",
+    )
+    parser.add_argument(
+        "--missed-policy", choices=["catch-up-once", "skip"], default="catch-up-once"
+    )
+    parser.add_argument(
+        "--ambiguous-time-policy", choices=["first", "second"], default="first"
+    )
+    parser.add_argument(
+        "--nonexistent-time-policy", choices=["next-valid", "skip"], default="next-valid"
+    )
+    parser.add_argument("--attributes", type=json_object, default={})
+    parser.add_argument("--disabled", action="store_true")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="switchboard", description=__doc__)
     parser.add_argument("--db", help="SQLite database path (default: SWITCHBOARD_DB or XDG data)")
@@ -180,6 +213,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_timer.add_argument("--first-run-at")
     add_timer.add_argument("--attributes", type=json_object, default={})
     add_timer.add_argument("--disabled", action="store_true")
+    add_calendar = schedule.add_parser(
+        "add-calendar", help="schedule a deterministic event at a local wall-clock time"
+    )
+    add_calendar_arguments(add_calendar)
+    update_calendar = schedule.add_parser(
+        "update-calendar", help="update and re-anchor a calendar schedule"
+    )
+    add_calendar_arguments(update_calendar)
+    preview = schedule.add_parser("preview", help="preview future calendar occurrences")
+    preview.add_argument("id")
+    preview.add_argument("--from", dest="from_at")
+    preview.add_argument("--count", type=int, default=5)
     schedule.add_parser("list")
     enable = schedule.add_parser("enable")
     enable.add_argument("id")
@@ -498,6 +543,28 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 first_run_at=args.first_run_at,
                 attributes=args.attributes,
                 enabled=not args.disabled,
+            )
+        if args.verb in {"add-calendar", "update-calendar"}:
+            if args.verb == "update-calendar":
+                core.get_schedule(db, args.id)
+            return core.upsert_calendar_schedule(
+                db,
+                args.id,
+                space_id=args.space,
+                source_id=args.source,
+                event_type=args.event_type,
+                local_time=args.at,
+                timezone=args.timezone,
+                weekdays=calendar_weekdays(args.weekdays),
+                missed_policy=args.missed_policy,
+                ambiguous_time_policy=args.ambiguous_time_policy,
+                nonexistent_time_policy=args.nonexistent_time_policy,
+                attributes=args.attributes,
+                enabled=not args.disabled,
+            )
+        if args.verb == "preview":
+            return core.preview_calendar_schedule(
+                db, args.id, at=args.from_at, count=args.count
             )
         if args.verb == "enable":
             return core.set_schedule_enabled(db, args.id, True)

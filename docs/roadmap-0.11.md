@@ -2,8 +2,8 @@
 
 ## Status
 
-This proposal awaits approval. It defines the implementation and migration boundary. It changes no
-live routine.
+The implementation is complete in the local checkout. Live topology, worker chats, legacy
+schedulers, release, and deployment remain unchanged pending a separate migration decision.
 
 ## Outcome
 
@@ -193,9 +193,8 @@ Migrate one workflow at a time:
 - Using one chat without consumer-level serialization: simultaneous personal and work wakes can
   interleave and apply the wrong profile.
 
-## Approval requested
+## Next release boundary
 
-Approve 0.11 as one coherent change. Its scope includes first-class calendar triggers with the
-semantics above, one serialized inbox chat, a separate bills chat, and the three existing local
-schedules. Migration proceeds one workflow at a time. Implementation and live migration start only
-after approval.
+Review and publish the local 0.11 implementation before changing live state. Live migration then
+proceeds one workflow at a time using private topology and stable worker identifiers; it is not
+part of the implementation commit.
