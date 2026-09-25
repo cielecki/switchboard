@@ -725,7 +725,8 @@ def mark_schedule_started(db: Database, schedule_id: str, started_at: str | None
     timestamp = started_at or now()
     with db.transaction() as connection:
         connection.execute(
-            "UPDATE adapter_schedules SET last_started_at=?, updated_at=? WHERE id=?",
+            "UPDATE adapter_schedules SET last_started_at=?, last_state=NULL, "
+            "last_error=NULL, updated_at=? WHERE id=?",
             (timestamp, timestamp, schedule_id),
         )
 
