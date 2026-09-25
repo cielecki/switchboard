@@ -55,6 +55,8 @@ class DeliveryTest(unittest.TestCase):
         self.assertTrue(result["request_id"].startswith("msg_broker_"))
         self.assertIn("--delivery-only", calls[0])
         self.assertIn("task-123", calls[0])
+        # A Codex wake must start a turn, not just park the message in the native queue.
+        self.assertIn("--activate-if-inactive", calls[0])
         self.assertIn("delivery show", " ".join(calls[0]))
 
         repeated = core.dispatch_delivery(

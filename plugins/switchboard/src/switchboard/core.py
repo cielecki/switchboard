@@ -2378,17 +2378,42 @@ def processor_consumer_is_busy(
     return row is not None
 
 
+def _relay_activates(client: str, activate_inactive: bool) -> bool:
+    """Whether the relay should start a turn in a target nobody has loaded.
+
+    Claude honours the binding's opt-in: without it an inactive target fails closed.
+    Codex always activates: without it `codex queue` only parks the message in the
+    thread's native queue until someone next opens that thread, which is non-delivery.
+    """
+    return client == "codex" or (client == "claude" and activate_inactive)
+
+
+def _relay_timeout(client: str, timeout: int) -> int:
+    # A Codex activation waits up to `timeout` after the queue call, which has its own.
+    return (2 * timeout if client == "codex" else timeout) + 25
+
+
 def _relay_outcome(result: subprocess.CompletedProcess[str]) -> str:
-    """Classify a chat wake without conflating socket acceptance with delivery."""
-    if result.returncode == 0:
-        return "delivered"
+    """Classify a chat wake without conflating socket acceptance with delivery.
+
+    Returns "delivered", "accepted" (a live owner holds it; a Claude timeout after
+    transcript acceptance, or a Codex thread that is mid-turn and runs it next),
+    "queued" (parked in a Codex native queue with nothing to run it) or "failed".
+    """
     try:
         payload = json.loads(result.stdout)
     except (json.JSONDecodeError, TypeError):
-        return "failed"
+        payload = None
     if not isinstance(payload, dict):
-        return "failed"
+        return "delivered" if result.returncode == 0 else "failed"
     if payload.get("delivery_status") == "delivered":
+        return "delivered"
+    if payload.get("delivery_status") == "queued":
+        if result.returncode == 0 and payload.get("activation") == "loaded-busy":
+            return "accepted"
+        # No activation, or activation "pending"/"failed" (exit 2): still queued.
+        return "queued" if result.returncode == 0 else "failed"
+    if result.returncode == 0:
         return "delivered"
     if (
         payload.get("delivery_status") == "accepted"
@@ -2455,14 +2480,17 @@ def dispatch_processor_delivery(
         str(timeout),
         "--delivery-only",
     ]
-    if client == "claude" and (activate_inactive or binding["activate_inactive"]):
+    if _relay_activates(client, activate_inactive or binding["activate_inactive"]):
         command.append("--activate-if-inactive")
 
     try:
-        result = runner(command, capture_output=True, text=True, timeout=timeout + 25)
+        result = runner(
+            command, capture_output=True, text=True, timeout=_relay_timeout(client, timeout)
+        )
         relay_outcome = _relay_outcome(result)
         error = None if relay_outcome in {"accepted", "delivered"} else (
-            f"relay exited {result.returncode}: " + (result.stderr or result.stdout)[-2000:]
+            f"relay exited {result.returncode} ({relay_outcome}): "
+            + (result.stderr or result.stdout)[-2000:]
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         result = None
@@ -2486,7 +2514,12 @@ def dispatch_processor_delivery(
                 command="processor.delivery-dispatch",
                 entity_type="processor_delivery",
                 entity_id=delivery_id,
-                payload={"request_id": request_id, "client": client, "session": session},
+                payload={
+                    "request_id": request_id,
+                    "client": client,
+                    "session": session,
+                    "relay_outcome": relay_outcome,
+                },
             )
         else:
             connection.execute(
@@ -2504,6 +2537,7 @@ def dispatch_processor_delivery(
         "state": "accepted",
         "request_id": request_id,
         "attempt_id": attempt_id,
+        "relay_outcome": relay_outcome,
         "idempotent": False,
     }
 
@@ -2554,14 +2588,17 @@ def dispatch_delivery(
         str(timeout),
         "--delivery-only",
     ]
-    if client == "claude" and activate_inactive:
+    if _relay_activates(client, activate_inactive):
         command.append("--activate-if-inactive")
 
     try:
-        result = runner(command, capture_output=True, text=True, timeout=timeout + 25)
+        result = runner(
+            command, capture_output=True, text=True, timeout=_relay_timeout(client, timeout)
+        )
         relay_outcome = _relay_outcome(result)
         error = None if relay_outcome in {"accepted", "delivered"} else (
-            f"relay exited {result.returncode}: " + (result.stderr or result.stdout)[-2000:]
+            f"relay exited {result.returncode} ({relay_outcome}): "
+            + (result.stderr or result.stdout)[-2000:]
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         result = None
@@ -2583,7 +2620,12 @@ def dispatch_delivery(
                 command="delivery.dispatch",
                 entity_type="delivery",
                 entity_id=delivery_id,
-                payload={"request_id": request_id, "client": client, "session": session},
+                payload={
+                    "request_id": request_id,
+                    "client": client,
+                    "session": session,
+                    "relay_outcome": relay_outcome,
+                },
             )
         else:
             connection.execute(
@@ -2598,6 +2640,7 @@ def dispatch_delivery(
         "state": "accepted",
         "request_id": request_id,
         "attempt_id": attempt_id,
+        "relay_outcome": relay_outcome,
         "idempotent": False,
     }
 

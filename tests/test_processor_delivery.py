@@ -328,6 +328,139 @@ class ProcessorDeliveryTest(unittest.TestCase):
         self.assertTrue(repeated["idempotent"])
         self.assertEqual(len(calls), 1)
 
+    def codex_delivery(self) -> tuple[dict, Path]:
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:codex:thread-1",
+        )
+        self.emit()
+        relay = self.root / "send-message.py"
+        relay.touch()
+        return core.list_processor_deliveries(self.db)[0], relay
+
+    def test_codex_dispatch_always_activates_and_records_started_turn(self) -> None:
+        delivery, relay = self.codex_delivery()
+        calls: list[list[str]] = []
+        timeouts: list[int] = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            timeouts.append(kwargs["timeout"])
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    '{"status":"delivered","delivery_status":"delivered",'
+                    '"activation":"started-turn"}'
+                ),
+                stderr="",
+            )
+
+        result = core.dispatch_processor_delivery(
+            self.db, delivery["id"], relay=relay, cli_command=["switchboard"], runner=runner
+        )
+
+        self.assertEqual(result["state"], "accepted")
+        self.assertEqual(result["relay_outcome"], "delivered")
+        self.assertEqual(calls[0][calls[0].index("--client") + 1], "codex")
+        self.assertIn("--activate-if-inactive", calls[0])
+        self.assertEqual(timeouts, [2 * 30 + 25])
+
+    def test_codex_plain_queue_is_not_delivery(self) -> None:
+        delivery, relay = self.codex_delivery()
+
+        with self.assertRaisesRegex(ValueError, r"relay exited 0 \(queued\)"):
+            core.dispatch_processor_delivery(
+                self.db,
+                delivery["id"],
+                relay=relay,
+                cli_command=["switchboard"],
+                runner=lambda *_args, **_kwargs: SimpleNamespace(
+                    returncode=0,
+                    stdout='{"status":"queued","delivery_status":"queued"}',
+                    stderr="",
+                ),
+            )
+
+        stored = core.get_processor_delivery(self.db, delivery["id"])
+        self.assertEqual(stored["state"], "pending")
+        self.assertIn("queued", stored["last_error"])
+
+    def test_codex_loaded_busy_is_accepted_not_delivered(self) -> None:
+        delivery, relay = self.codex_delivery()
+
+        result = core.dispatch_processor_delivery(
+            self.db,
+            delivery["id"],
+            relay=relay,
+            cli_command=["switchboard"],
+            runner=lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    '{"status":"queued","delivery_status":"queued",'
+                    '"activation":"loaded-busy"}'
+                ),
+                stderr="",
+            ),
+        )
+
+        self.assertEqual(result["state"], "accepted")
+        self.assertEqual(result["relay_outcome"], "accepted")
+
+    def test_codex_pending_activation_retries_with_same_request_id(self) -> None:
+        delivery, relay = self.codex_delivery()
+        calls: list[list[str]] = []
+
+        def runner(command, **_kwargs):
+            calls.append(command)
+            if len(calls) == 1:
+                return SimpleNamespace(
+                    returncode=2,
+                    stdout=(
+                        '{"status":"queued","delivery_status":"queued",'
+                        '"activation":"pending"}'
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    '{"status":"delivered","delivery_status":"delivered",'
+                    '"activation":"started-turn","idempotent_replay":true}'
+                ),
+                stderr="",
+            )
+
+        with self.assertRaisesRegex(ValueError, r"relay exited 2 \(failed\)"):
+            core.dispatch_processor_delivery(
+                self.db, delivery["id"], relay=relay, cli_command=["switchboard"], runner=runner
+            )
+        self.assertEqual(core.get_processor_delivery(self.db, delivery["id"])["state"], "pending")
+        result = core.dispatch_processor_delivery(
+            self.db, delivery["id"], relay=relay, cli_command=["switchboard"], runner=runner
+        )
+
+        self.assertEqual(result["relay_outcome"], "delivered")
+        self.assertEqual(calls[0], calls[1])
+
+    def test_relay_outcome_classifies_codex_results(self) -> None:
+        cases = [
+            (0, "accepted", "delivered"),
+            (0, '{"delivery_status":"delivered","activation":"started-turn"}', "delivered"),
+            (0, '{"delivery_status":"delivered","activation":"already-drained"}', "delivered"),
+            (0, '{"status":"queued","delivery_status":"queued"}', "queued"),
+            (0, '{"delivery_status":"queued","activation":"loaded-busy"}', "accepted"),
+            (2, '{"delivery_status":"queued","activation":"pending"}', "failed"),
+            (2, '{"delivery_status":"queued","activation":"failed"}', "failed"),
+            (2, '{"delivery_status":"queued","activation":"loaded-busy"}', "failed"),
+            (2, "not json", "failed"),
+        ]
+        for returncode, stdout, expected in cases:
+            with self.subTest(stdout=stdout, returncode=returncode):
+                result = SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+                self.assertEqual(core._relay_outcome(result), expected)
+
     def test_only_one_delivery_is_dispatched_per_consumer(self) -> None:
         worker = "chat:claude:session-1"
         core.bind_processor(

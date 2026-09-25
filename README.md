@@ -121,6 +121,12 @@ switchboard --json delivery dispatch <delivery-id> \
   --relay /absolute/path/to/chats/send-message.py
 ```
 
+`--activate-inactive` (on a dispatch, service or processor binding) lets a Claude wake open an
+inactive session; without it that wake fails closed. Codex wakes always activate: the relay loads
+the exact thread so the turn starts now. A message that only reached a Codex thread's native queue
+is not a delivery and stays pending for a retry with the same request ID; a thread already loaded
+and mid-turn (`loaded-busy`) counts as accepted.
+
 Broker acceptance changes the delivery to `accepted`, not `acknowledged`. The destination task
 receives exact CLI commands for inspecting and acknowledging the delivery after completing its
 work. See [the adapter contract](plugins/switchboard/docs/adapters.md) for third-party adapters.
