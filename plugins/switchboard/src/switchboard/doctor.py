@@ -110,8 +110,18 @@ def run_doctor(db: Database, *, now_at: datetime | None = None) -> dict[str, Any
             if schedule["schedule_kind"] == "calendar"
             else max(60, schedule["every_seconds"] * 2)
         )
+        stream_is_running = (
+            schedule["adapter"] == "command-stream"
+            and schedule["last_state"] is None
+            and _parse(schedule["last_started_at"]) is not None
+            and (
+                _parse(schedule["last_finished_at"]) is None
+                or _parse(schedule["last_started_at"]) > _parse(schedule["last_finished_at"])
+            )
+        )
         if (
             schedule["enabled"]
+            and not stream_is_running
             and next_run
             and next_run
             < checked_at - timedelta(seconds=overdue_seconds)

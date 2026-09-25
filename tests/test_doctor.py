@@ -62,6 +62,24 @@ class DoctorTest(unittest.TestCase):
             )
         self.assertIn("schedule.overdue", {item["code"] for item in result["findings"]})
 
+    def test_running_stream_is_not_reported_as_overdue(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("switchboard.doctor.sys.platform", "linux"),
+        ):
+            root = Path(directory)
+            executable = root / "stream"
+            executable.touch()
+            db = Database(root / "switchboard.sqlite3")
+            core.upsert_stream_schedule(
+                db, "socket", command=[str(executable)], every_seconds=5
+            )
+            core.mark_schedule_started(db, "socket", "2026-09-24T05:00:00+00:00")
+            result = run_doctor(
+                db, now_at=datetime.fromisoformat("2026-09-24T07:00:01+00:00")
+            )
+        self.assertNotIn("schedule.overdue", {item["code"] for item in result["findings"]})
+
     def test_unclaimed_accepted_wake_is_a_warning(self) -> None:
         with (
             tempfile.TemporaryDirectory() as directory,
