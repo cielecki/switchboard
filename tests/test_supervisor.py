@@ -177,7 +177,7 @@ class SupervisorTest(unittest.TestCase):
         while time.monotonic() < deadline and not calls:
             time.sleep(0.01)
         self.assertEqual(calls, [{
-            "command": [str(executable.resolve()), "--switchboard"],
+            "command": [str(executable), "--switchboard"],
             "environment": {"CHANNEL": "C123"},
         }])
 

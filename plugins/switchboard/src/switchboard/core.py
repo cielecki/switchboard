@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import sqlite3
 import subprocess
@@ -381,7 +382,10 @@ def upsert_stream_schedule(
         raise ValueError("stream restart delay must be at least one second")
     if not command or not all(isinstance(part, str) and part for part in command):
         raise ValueError("stream command must be a non-empty string array")
-    executable = Path(command[0]).expanduser().resolve()
+    executable = Path(os.path.expanduser(command[0]))
+    if not executable.is_absolute():
+        raise ValueError("stream executable must use an absolute path")
+    executable = Path(os.path.abspath(executable))
     if not executable.is_file():
         raise ValueError(f"stream executable not found: {executable}")
     normalized_command = [str(executable), *command[1:]]
