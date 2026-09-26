@@ -119,7 +119,12 @@ def validate_topology(document: dict[str, Any]) -> None:
         adapter = schedule.get("adapter")
         config = schedule.get("config")
         schedule_kind = schedule.get("schedule_kind", "interval")
-        if adapter not in {"ingest-shadow", "inbound-leads", "timer"}:
+        if adapter not in {
+            "command-stream",
+            "ingest-shadow",
+            "inbound-leads",
+            "timer",
+        }:
             raise ValueError(
                 f"schedule {schedule.get('id')} has unsupported adapter {adapter}"
             )
@@ -147,7 +152,7 @@ def validate_topology(document: dict[str, Any]) -> None:
             raise ValueError(
                 f"schedule {schedule.get('id')} has unsupported kind {schedule_kind}"
             )
-        if config.get("space_id") not in space_ids:
+        if adapter != "command-stream" and config.get("space_id") not in space_ids:
             raise ValueError(
                 f"schedule {schedule.get('id')} references an undeclared space"
             )
@@ -155,7 +160,31 @@ def validate_topology(document: dict[str, Any]) -> None:
             raise ValueError(
                 f"schedule {schedule.get('id')} references an undeclared source"
             )
+        if adapter == "command-stream":
+            command = config.get("command")
+            if (
+                not isinstance(command, list)
+                or not command
+                or not all(isinstance(part, str) and part for part in command)
+            ):
+                raise ValueError(
+                    f"schedule {schedule.get('id')} command must be a non-empty string array"
+                )
+            executable = Path(command[0]).expanduser()
+            if not executable.is_absolute() or not executable.is_file():
+                raise ValueError(
+                    f"schedule {schedule.get('id')} executable not found: {command[0]}"
+                )
+            environment = config.get("environment", {})
+            if not isinstance(environment, dict) or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in environment.items()
+            ):
+                raise ValueError(
+                    f"schedule {schedule.get('id')} environment must contain string keys and values"
+                )
         file_keys = {
+            "command-stream": (),
             "ingest-shadow": ("status_script", "discovery_script"),
             "inbound-leads": (
                 "ledger_script",
@@ -370,6 +399,8 @@ def _normalize(document: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]
             config.setdefault("slack_discovery_script", None)
             config.setdefault("source_mode", "both")
             config.setdefault("timeout", 240)
+        elif item["adapter"] == "command-stream":
+            config.setdefault("environment", {})
         resources.append(
             (
                 "schedule",
@@ -589,6 +620,14 @@ def _upsert_schedule(db: Database, desired: dict[str, Any]) -> dict[str, Any]:
             enabled=desired["enabled"],
         )
     common = {"every_seconds": desired["every_seconds"], "enabled": desired["enabled"]}
+    if desired["adapter"] == "command-stream":
+        return core.upsert_stream_schedule(
+            db,
+            desired["id"],
+            command=config["command"],
+            environment=config.get("environment"),
+            **common,
+        )
     if desired["adapter"] == "ingest-shadow":
         return core.upsert_ingest_schedule(
             db,

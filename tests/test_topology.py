@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -154,6 +155,32 @@ class TopologyTest(unittest.TestCase):
         schedule = next(item for item in exported["schedules"] if item["id"] == "weekday")
         self.assertEqual(schedule["schedule_kind"], "calendar")
         self.assertNotIn("every_seconds", schedule)
+
+    def test_stream_schedule_export_plans_and_applies_idempotently(self) -> None:
+        core.upsert_stream_schedule(
+            self.db,
+            "socket",
+            command=[sys.executable, "-c", "print('{}')"],
+            every_seconds=5,
+            environment={"CHANNEL": "C123"},
+        )
+
+        exported = export_topology(
+            self.db, owner="stream-live", include_local_values=True
+        )
+        first_plan = plan_topology(self.db, exported)
+        first = apply_topology(self.db, exported)
+        second_plan = plan_topology(self.db, exported)
+
+        stream = next(item for item in exported["schedules"] if item["id"] == "socket")
+        self.assertEqual(stream["adapter"], "command-stream")
+        self.assertEqual(stream["config"]["command"][0], sys.executable)
+        self.assertEqual(first_plan["conflicts"], 0)
+        self.assertEqual(first["conflicts"], 0)
+        self.assertEqual(second_plan["changes"], 0)
+        self.assertTrue(
+            all(item["action"] == "noop" for item in second_plan["operations"])
+        )
 
     def test_prune_disables_missing_managed_resources_but_retains_space(self) -> None:
         apply_topology(self.db, self.document)
