@@ -16,7 +16,7 @@
 | Phase | Step | Title | Status | Commit |
 |-------|------|-------|--------|--------|
 | 1 | 1.1 | Enforce the timer-source contract at schedule upsert and in doctor | done | 0fb11b9 |
-| 1 | 1.2 | Add the audited legacy calendar-source repair command | todo | — |
+| 1 | 1.2 | Add the audited legacy calendar-source repair command | done | 53a8c70 |
 | 2 | 2.1 | Enforce the same timer-source contract in declarative topology | todo | — |
 | 2 | 2.2 | Prove due and catch-up occurrences are durable and processed once | todo | — |
 | 3 | 3.1 | Document the repair workflow and prepare release 0.11.5 | todo | — |

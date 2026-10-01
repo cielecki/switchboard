@@ -688,6 +688,131 @@ def list_schedules(db: Database, *, enabled: bool | None = None) -> list[dict[st
     return [_present_schedule(row) for row in db.rows(query, params)]
 
 
+def repair_calendar_source(db: Database, schedule_id: str) -> dict[str, Any]:
+    """Repair the bounded legacy calendar-source shape used by timer schedules."""
+
+    db.initialize()
+    with db.transaction() as connection:
+        schedule = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        if schedule is None:
+            raise ValueError(f"schedule not found: {schedule_id}")
+        if schedule["schedule_kind"] != "calendar" or schedule["adapter"] != "timer":
+            raise ValueError(
+                f"schedule {schedule_id} is not a timer-backed calendar schedule"
+            )
+
+        try:
+            schedule_config = json.loads(schedule["config_json"])
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(f"schedule {schedule_id} has invalid config") from exc
+        if not isinstance(schedule_config, dict):
+            raise ValueError(f"schedule {schedule_id} has invalid config")
+        source_id = schedule_config.get("source_id")
+        space_id = schedule_config.get("space_id")
+        if not isinstance(source_id, str) or not source_id:
+            raise ValueError(f"schedule {schedule_id} has no source")
+        if not isinstance(space_id, str) or not space_id:
+            raise ValueError(f"schedule {schedule_id} has no space")
+
+        source = connection.execute(
+            "SELECT * FROM sources WHERE id=?", (source_id,)
+        ).fetchone()
+        if source is None:
+            raise ValueError(f"source not found: {source_id}")
+        if source["space_id"] != space_id:
+            raise ValueError(
+                f"source {source_id} is already bound to {source['space_id']} / {source['kind']}"
+            )
+        try:
+            source_config = json.loads(source["config_json"])
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(f"source {source_id} has invalid config") from exc
+        if not isinstance(source_config, dict):
+            raise ValueError(f"source {source_id} has invalid config")
+
+        shared_schedule_ids: list[str] = []
+        for candidate in connection.execute(
+            "SELECT * FROM adapter_schedules ORDER BY id"
+        ).fetchall():
+            try:
+                candidate_config = json.loads(candidate["config_json"])
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError(
+                    f"cannot safely inspect schedule {candidate['id']} with invalid config"
+                ) from exc
+            if not isinstance(candidate_config, dict):
+                raise ValueError(
+                    f"cannot safely inspect schedule {candidate['id']} with invalid config"
+                )
+            if candidate_config.get("source_id") != source_id:
+                continue
+            if (
+                candidate["adapter"] != "timer"
+                or candidate["schedule_kind"] not in {"calendar", "interval"}
+                or candidate_config.get("space_id") != space_id
+            ):
+                raise ValueError(
+                    f"source {source_id} is shared with incompatible schedule "
+                    f"{candidate['id']}"
+                )
+            shared_schedule_ids.append(candidate["id"])
+
+        before = {
+            "space_id": source["space_id"],
+            "kind": source["kind"],
+            "adapter": source_config.get("adapter"),
+        }
+        if source["kind"] == "timer" and source_config.get("adapter") == "timer":
+            return {
+                "schedule_id": schedule_id,
+                "source_id": source_id,
+                "state": "already-repaired",
+                "repaired": False,
+                "before": before,
+                "after": before,
+                "shared_schedule_ids": shared_schedule_ids,
+            }
+        if source["kind"] != "calendar" or source_config.get("adapter") not in {
+            None,
+            "calendar",
+        }:
+            raise ValueError(
+                f"source {source_id} does not match the repairable legacy calendar shape"
+            )
+
+        repaired_config = dict(source_config)
+        repaired_config["adapter"] = "timer"
+        connection.execute(
+            "UPDATE sources SET kind='timer', config_json=? WHERE id=?",
+            (json.dumps(repaired_config, sort_keys=True), source_id),
+        )
+        after = {"space_id": space_id, "kind": "timer", "adapter": "timer"}
+        audit(
+            connection,
+            command="schedule.repair-calendar-source",
+            entity_type="source",
+            entity_id=source_id,
+            payload={
+                "schedule_id": schedule_id,
+                "source_id": source_id,
+                "before": before,
+                "after": after,
+                "shared_schedule_ids": shared_schedule_ids,
+            },
+        )
+        return {
+            "schedule_id": schedule_id,
+            "source_id": source_id,
+            "state": "repaired",
+            "repaired": True,
+            "before": before,
+            "after": after,
+            "shared_schedule_ids": shared_schedule_ids,
+        }
+
+
 def set_schedule_enabled(db: Database, schedule_id: str, enabled: bool) -> dict[str, Any]:
     timestamp = now()
     with db.transaction() as connection:

@@ -235,6 +235,11 @@ def build_parser() -> argparse.ArgumentParser:
     preview.add_argument("id")
     preview.add_argument("--from", dest="from_at")
     preview.add_argument("--count", type=int, default=5)
+    repair_calendar_source = schedule.add_parser(
+        "repair-calendar-source",
+        help="repair a validated legacy calendar source used by a timer schedule",
+    )
+    repair_calendar_source.add_argument("id")
     schedule.add_parser("list")
     enable = schedule.add_parser("enable")
     enable.add_argument("id")
@@ -585,6 +590,8 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
             return core.preview_calendar_schedule(
                 db, args.id, at=args.from_at, count=args.count
             )
+        if args.verb == "repair-calendar-source":
+            return core.repair_calendar_source(db, args.id)
         if args.verb == "enable":
             return core.set_schedule_enabled(db, args.id, True)
         if args.verb == "disable":

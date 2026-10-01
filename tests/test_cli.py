@@ -280,6 +280,44 @@ class CliTest(unittest.TestCase):
         )
         self.assertEqual(self.run_cli("schedule", "list"), [])
 
+    def test_repair_calendar_source_command(self) -> None:
+        self.run_cli(
+            "schedule",
+            "add-calendar",
+            "work-inbox",
+            "--space",
+            "work-inbox",
+            "--source",
+            "timer/work-inbox",
+            "--event-type",
+            "inbox.sweep.due",
+            "--at",
+            "07:00",
+            "--timezone",
+            "Europe/Warsaw",
+        )
+        with sqlite3.connect(self.db) as connection:
+            connection.execute(
+                "UPDATE sources SET kind='calendar', config_json=? "
+                "WHERE id='timer/work-inbox'",
+                (json.dumps({"adapter": "calendar", "marker": "preserve"}),),
+            )
+
+        repaired = self.run_cli(
+            "schedule", "repair-calendar-source", "work-inbox"
+        )
+        repeated = self.run_cli(
+            "schedule", "repair-calendar-source", "work-inbox"
+        )
+
+        self.assertTrue(repaired["repaired"])
+        self.assertEqual(repaired["state"], "repaired")
+        self.assertFalse(repeated["repaired"])
+        self.assertEqual(repeated["state"], "already-repaired")
+        source = self.run_cli("source", "list")[0]
+        self.assertEqual(source["kind"], "timer")
+        self.assertEqual(source["config"], {"adapter": "timer", "marker": "preserve"})
+
     def test_json_reports_database_errors_instead_of_a_traceback(self) -> None:
         # A directory cannot be opened as a database, which sqlite3 reports as an
         # OperationalError, the same class as "database is locked".
