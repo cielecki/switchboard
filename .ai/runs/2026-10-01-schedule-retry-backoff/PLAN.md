@@ -21,6 +21,7 @@
 | 2 | 2.2 | Prove retry, restart, recovery, and occurrence-once invariants | done | f699d15 |
 | 2 | 2.3 | Preserve interval occurrence identity across the 0.11.5 upgrade boundary | done | f0fa967 |
 | 2 | 2.4 | Restore dashboard table readability across responsive viewports | done | f7154da |
+| 2 | 2.5 | Polish operator-facing nulls, contrast, and routing copy | todo | — |
 | 3 | 3.1 | Document bounded retry and prepare release 0.11.6 | done | bcb2380 |
 
 ## Goal
@@ -194,6 +195,15 @@ adapter that cannot post to Slack or a chat.
     `null`, without changing the JSON API contract or adding controls.
   - Add focused HTML/CSS/render-data tests, then require a new fresh-context visual QA pass on the
     final revision at desktop and narrow viewports.
+  - Verification: configured per-step unit suite and both plugin validators.
+
+- **2.5 Polish operator-facing nulls, contrast, and routing copy**
+  - Omit or humanize absent error values in the rendered run-lifecycle detail without changing the
+    JSON API contract.
+  - Raise muted placeholder text contrast above the 4.5:1 normal-text threshold in both viewports.
+  - Correct README routing language: a matching enabled route creates a processor run, while an
+    enabled processor binding additionally creates its delivery.
+  - Add focused presentation assertions and require another fresh-context visual QA pass.
   - Verification: configured per-step unit suite and both plugin validators.
 
 ### Phase 3 — Operator contract and release metadata

@@ -62,3 +62,11 @@ Step 2.4 fixed the responsive dashboard tables and passed 145 tests, both plugin
 embedded JavaScript syntax checks. The checkpoint had no configured commands and was recorded as
 an explicit skip. All implementation and repair rows are complete; release remains blocked until
 the repeated full gate, independent diff review, and fresh rendered visual QA pass.
+
+## 2026-10-01T10:03:53Z — final presentation repair added
+
+The repeated full gate passed 145 tests on Python 3.12 and 3.13, wheel acceptance, and both plugin
+validators. Independent code review passed except for one low-severity README accuracy sentence.
+Fresh visual QA confirmed the responsive table repair but found raw `error: null` in a completed-run
+detail and muted text contrast of 4.4477:1 against a 4.5:1 threshold. Step 2.5 will address only
+these findings. Release remains blocked until gate, review, and fresh visual QA all pass.

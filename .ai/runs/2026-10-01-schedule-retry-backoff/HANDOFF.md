@@ -3,24 +3,24 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T09:23:09Z
+- **Last updated:** 2026-10-01T10:03:53Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** implementation complete / repeated final gate and review
+- **Current phase / step:** 2.5 final presentation review repair
 - **Last commit:** `f7154da` (`fix: restore responsive dashboard tables`)
 
 ## What just happened
 
-Step 2.4 repaired the dashboard tables with local focusable overflow regions, readable column
-minimums, controlled long-detail wrapping, and human placeholders while preserving API nulls and
-the read-only boundary. All implementation and review-repair rows are complete. The checkpoint had
-no configured commands and was recorded as skipped. No release, installation, or live verification
-has occurred.
+The repeated code review passed the implementation but found one inaccurate README sentence about
+when a binding is required. Fresh visual QA proved all table containment and wrapping repairs, then
+found two remaining presentation defects: a completed-run detail renders `error: null`, and muted
+placeholder text measures 4.4477:1 instead of the 4.5:1 normal-text threshold. Step 2.5 owns only
+these final review findings. No release, installation, or live verification has occurred.
 
 ## Next concrete action
 
-Rerun the full gate, independent complete-diff review, and a new fresh-context visual QA pass on
-the final revision. Release only if all three pass.
+Dispatch one executor for step 2.5, then rerun the full gate, independent complete-diff review, and
+a new fresh-context visual QA pass on the final revision. Release only if all three pass.
 
 ## Blockers / open questions
 
