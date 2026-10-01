@@ -123,6 +123,25 @@ occurrence is due. Use `schedule update-calendar` for material edits. Updates an
 a new revision and start from the next future occurrence, so do not expect disabled periods to be
 backfilled.
 
+Both interval and calendar timer schedules require their source to have kind `timer` in the same
+space. The schedule command provisions a missing source atomically; never pre-register a calendar
+source with kind `calendar`. Treat a `doctor` finding with code
+`schedule.timer-source-mismatch` as a configuration error even when the schedule is disabled.
+For a confirmed legacy calendar source, first create and verify a new online backup, then run
+`schedule repair-calendar-source <schedule-id>`. Read back `schedule list`, `source list`, and
+`doctor`; the repair must report `repaired` (or `already-repaired` on a repeat). The command refuses
+wrong-space, unrelated, or incompatibly shared sources and preserves the schedule revision,
+`next_run_at`, and operational history. Export a new private topology snapshot with
+`--include-local-values` and require `topology plan` to show no changes or conflicts. Never repair
+the database or topology JSON by hand.
+
+Calendar events use this source-scoped external ID:
+`schedule:<schedule-id>:r<revision>:<scheduled-for>`. Switchboard transactionally creates one
+durable logical event, any first-match processor run and bound delivery, and advances the cursor,
+so a repeat cycle or supervisor restart before the next due time cannot duplicate them. This
+guarantee does not cover external side effects: delivery and processing attempts may repeat, so
+downstream mail, CRM, Slack, and similar writes still need their own idempotency.
+
 Manage recurring adapters only through `schedule` commands. `supervisor once` is appropriate for a
 verified manual cycle; `service install` manages the persistent macOS launch agent. Do not edit the
 database, launchd plist, or supervisor lock file directly. The web dashboard remains read-only and

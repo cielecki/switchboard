@@ -268,6 +268,30 @@ a calendar schedule starts a new revision and re-anchors it in the future. Event
 routing, and schedule advancement share one transaction, so a crash cannot advance past work that
 was not recorded.
 
+Timer and calendar schedules require a source of kind `timer` in the schedule's space. When a
+schedule is created, Switchboard provisions the source if it is missing. If the source belongs to
+another space or has another kind, Switchboard rejects the operation before writing the schedule.
+Declarative topology applies the same validation before planning or applying resources. Do not
+register a wall-clock source with kind `calendar`.
+
+Version 0.11.5 reports the legacy shape as `schedule.timer-source-mismatch`. After creating and
+verifying an online backup, run this CLI sequence to perform an audited repair of a confirmed
+legacy calendar schedule:
+
+```bash
+switchboard --json doctor
+switchboard --json backup create /absolute/private/path/switchboard-before-repair.sqlite3
+switchboard --json backup verify /absolute/private/path/switchboard-before-repair.sqlite3
+switchboard --json schedule repair-calendar-source <schedule-id>
+switchboard --json doctor
+```
+
+The repair changes only the validated legacy source kind and adapter marker. It preserves the
+schedule revision and cursor, along with existing events, routes, and runs. It rejects invalid,
+unsupported, incompatibly shared, or unrelated sources. Repeating the command returns
+`already-repaired` without writing again. Follow the
+[operations guide](plugins/switchboard/docs/operations.md).
+
 On macOS, install it as a persistent per-user launch agent entirely through the CLI:
 
 ```bash

@@ -62,6 +62,20 @@ increments the schedule revision and re-anchors it to the next future occurrence
 nonexistent local times use the explicit policies stored with the rule. Failed calendar execution
 does not advance `next_run_at`, so the supervisor can retry without losing the occurrence.
 
+Each emitted calendar occurrence uses this durable event external ID, deduplicated within its
+source: `schedule:<schedule-id>:r<revision>:<scheduled-for>`. In one database transaction,
+Switchboard inserts the event, applies first-match routing, creates any matched processor run and
+bound delivery, records adapter-run evidence, and advances the cursor to the next future
+occurrence. Reopening the database, polling again, or restarting the supervisor before the next
+due time does not create a duplicate event, run, or delivery. With `catch-up-once`, Switchboard
+creates those records only for the latest missed occurrence.
+
+The guarantee ends at the database boundary. External effects can repeat. A delivery may be
+retried with its stable request ID, and a processor run may have multiple attempts. The destination
+processor must make writes to mail, CRM, Slack, and other systems idempotent. It must claim the
+durable run before starting work and complete the run only after it knows the external result. A
+completed run cannot be claimed again.
+
 ## Process model
 
 Only one supervisor may hold a database's lock. `supervisor run` also hosts the read-only HTTP UI.

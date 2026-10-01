@@ -19,7 +19,7 @@
 | 1 | 1.2 | Add the audited legacy calendar-source repair command | done | 53a8c70 |
 | 2 | 2.1 | Enforce the same timer-source contract in declarative topology | done | e349c06 |
 | 2 | 2.2 | Prove due and catch-up occurrences are durable and processed once | done | 2c1c05d |
-| 3 | 3.1 | Document the repair workflow and prepare release 0.11.5 | todo | — |
+| 3 | 3.1 | Document the repair workflow and prepare release 0.11.5 | done | d8762b7 |
 
 ## Goal
 
