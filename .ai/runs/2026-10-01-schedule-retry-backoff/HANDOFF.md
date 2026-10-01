@@ -3,27 +3,26 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T07:59:38Z
+- **Last updated:** 2026-10-01T08:23:06Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** 1.1
-- **Last commit:** `2d3e794` (completed issue #2 run)
+- **Current phase / step:** 2.1
+- **Last commit:** `a630266` (`fix: atomically finalize scheduled attempts`)
 
 ## What just happened
 
-Issue #3 is claimed and its loop run was scaffolded. Maciej approved the issue's exact scope and
-0.11.6 live deployment before this plan was written. Repository research confirmed that failed
-calendar schedules retain a due logical cursor and can be selected every five seconds, while failed
-interval schedules currently advance their cadence. The durable execution plan now separates
-schema/domain state, atomic supervisor finalization, observability, end-to-end regression evidence,
-and release metadata into five sequential one-commit steps. No product source or live Switchboard
-state has changed during planning.
+Phase 1 is complete. Schema v10 persists retry state and internal schedule-alert episodes;
+`due_schedules()` respects the fixed retry deadline while preserving the logical cursor. Scheduled
+attempt finalization now atomically records terminal run evidence, retry state, and one alert
+episode per streak, while success atomically resets state and records recovery. Standalone adapters,
+streams, and external notification paths retain their previous behavior. The checkpoint had no
+configured commands and was recorded as skipped.
 
 ## Next concrete action
 
-Dispatch one executor for step 1.1. It should implement only persisted retry state, deterministic
-delay/due selection, and reset semantics, update the PLAN row in the same commit, run the configured
-per-step verification, and push `main`.
+Dispatch one executor for step 2.1. It should expose the same retry and episode projection through
+CLI, doctor, the read-only web dashboard, and topology behavior; run the configured per-step checks;
+commit once; update the PLAN row; and push `main`.
 
 ## Blockers / open questions
 

@@ -15,3 +15,10 @@ and controlled live-verification scope. Planning was delegated to a dedicated su
 uses direct `commit-to-main`, so the scaffold's nominal fix branch is not used. The durable plan has
 five sequential one-commit implementation steps followed by the final gate and a CLI-only live
 runbook. No product source or live Switchboard state changed during planning.
+
+## 2026-10-01T08:23:06Z — phase 1 checkpoint
+
+Steps 1.1 and 1.2 are complete and pushed to `main`. Schema v10, retry-aware due selection,
+schedule-owned atomic terminalization, and one internal alert episode per failure streak passed 135
+unit tests and both plugin validators. The configured checkpoint verification contained no commands,
+so it completed as an explicit skip. No release, plugin update, or live state mutation has occurred.
