@@ -19,7 +19,8 @@
 | 1 | 1.2 | Make scheduled attempt finalization and alert episodes atomic | done | a630266 |
 | 2 | 2.1 | Expose consistent retry state in CLI, doctor, web, and topology behavior | done | ed3a0a2 |
 | 2 | 2.2 | Prove retry, restart, recovery, and occurrence-once invariants | done | f699d15 |
-| 2 | 2.3 | Preserve interval occurrence identity across the 0.11.5 upgrade boundary | done | ea496c4 |
+| 2 | 2.3 | Preserve interval occurrence identity across the 0.11.5 upgrade boundary | done | f0fa967 |
+| 2 | 2.4 | Restore dashboard table readability across responsive viewports | todo | — |
 | 3 | 3.1 | Document bounded retry and prepare release 0.11.6 | done | bcb2380 |
 
 ## Goal
@@ -182,6 +183,17 @@ adapter that cannot post to Slack or a chat.
   - Add an upgrade-crash regression that seeds the legacy interval event without cursor advancement,
     then retries under the new runtime and proves no second event, processor run, or delivery appears.
   - Make the 0.11.6 roadmap statement release-neutral so the tagged artifact is not immediately stale.
+  - Verification: configured per-step unit suite and both plugin validators.
+
+- **2.4 Restore dashboard table readability across responsive viewports**
+  - Give identifier, state, and timestamp columns stable readable minimum widths; prevent
+    character-by-character token wrapping; keep long error detail in a controlled wrapping column.
+  - Contain wide technical and source-health tables in local horizontal scroll regions on narrow
+    viewports so the page itself does not overflow.
+  - Render absent schedule values consistently as a human-readable placeholder rather than raw
+    `null`, without changing the JSON API contract or adding controls.
+  - Add focused HTML/CSS/render-data tests, then require a new fresh-context visual QA pass on the
+    final revision at desktop and narrow viewports.
   - Verification: configured per-step unit suite and both plugin validators.
 
 ### Phase 3 — Operator contract and release metadata

@@ -46,3 +46,12 @@ across the 0.11.5 crash/upgrade boundary because step 2.2 changed its external I
 scoped step 2.3 will restore the historical interval identity, add the upgrade-crash regression, and
 make the 0.11.6 roadmap sentence release-neutral. Release remains blocked until the step, full gate,
 independent review, and fresh visual QA all pass.
+
+## 2026-10-01T09:07:55Z — visual-QA repair added
+
+Step 2.3 restored backward-compatible interval occurrence identity and passed 145 tests plus both
+plugin validators. Independent visual QA still blocked release: the expanded schedule and source
+tables become unreadable through character-by-character wrapping, the narrow page overflows
+horizontally, and absent values display as raw `null`. The retry card and read-only contract passed.
+Step 2.4 will fix only these presentation defects; final gate, review, and fresh visual QA must run
+again before release.

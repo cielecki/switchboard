@@ -3,24 +3,24 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T09:03:41Z
+- **Last updated:** 2026-10-01T09:07:55Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** 2.3 final-review repair
+- **Current phase / step:** 2.4 visual-QA repair
 - **Last commit:** `bcb2380` (`docs: prepare switchboard 0.11.6`)
 
 ## What just happened
 
-The configured final gate passed, but independent review found a release-blocking upgrade edge:
-step 2.2 changed interval timer external IDs, so a 0.11.5 crash after event persistence but before
-cursor advancement could be retried under a different ID and duplicate routed work. A scoped 2.3
-repair is now required. The reviewer also found one release-stale roadmap sentence. No release,
-installation, or live verification has occurred.
+Step 2.3 fixed the interval identity upgrade edge and added a regression that proves one legacy
+event/run/delivery across retry and reopen. Independent visual QA then found release-blocking table
+layout defects: identifier cells wrap one character per line, narrow Source health creates page-level
+horizontal overflow, and absent schedule values render as raw `null`. The retry attention card and
+read-only behavior passed. No release, installation, or live verification has occurred.
 
 ## Next concrete action
 
-Dispatch one executor for step 2.3 only, then rerun the full gate, independent review, and
-fresh-context rendered visual QA on the final revision.
+Dispatch one executor for step 2.4 only, then rerun the full gate, independent review, and a new
+fresh-context visual QA pass on the final revision.
 
 ## Blockers / open questions
 
