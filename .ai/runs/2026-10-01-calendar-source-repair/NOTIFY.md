@@ -15,3 +15,10 @@ Planning was delegated to a dedicated sub-agent. The repository uses direct `com
 the scaffold's nominal fix branch is not used. The durable plan has five sequential one-commit
 implementation steps followed by the final gate, 0.11.5 release/install, and CLI-only live repair
 verification. No source code or live Switchboard state changed during planning.
+
+## 2026-10-01T05:19:55Z — phase 1 checkpoint
+
+Steps 1.1 and 1.2 are complete and pushed to `main`. The shared timer-source contract, doctor
+diagnostic, and strict audited legacy repair command passed 115 unit tests and both plugin
+validators. The configured checkpoint verification contained no commands, so it completed as an
+explicit skip. No live state has been repaired yet; the deployed runtime remains 0.11.4.
