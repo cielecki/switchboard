@@ -38,3 +38,11 @@ release-bearing metadata are aligned at 0.11.6. The full suite remains at 144 pa
 plugin validators, prose lint, and factual review pass. The checkpoint had no configured commands
 and was recorded as an explicit skip. Release, installation, and live state remain untouched pending
 the final gate, full-diff review, and rendered visual QA.
+
+## 2026-10-01T09:03:41Z — final-review repair added
+
+The automated final gate passed, but independent review reproduced a duplicate interval occurrence
+across the 0.11.5 crash/upgrade boundary because step 2.2 changed its external ID format. A new
+scoped step 2.3 will restore the historical interval identity, add the upgrade-crash regression, and
+make the 0.11.6 roadmap sentence release-neutral. Release remains blocked until the step, full gate,
+independent review, and fresh visual QA all pass.

@@ -19,6 +19,7 @@
 | 1 | 1.2 | Make scheduled attempt finalization and alert episodes atomic | done | a630266 |
 | 2 | 2.1 | Expose consistent retry state in CLI, doctor, web, and topology behavior | done | ed3a0a2 |
 | 2 | 2.2 | Prove retry, restart, recovery, and occurrence-once invariants | done | f699d15 |
+| 2 | 2.3 | Preserve interval occurrence identity across the 0.11.5 upgrade boundary | todo | — |
 | 3 | 3.1 | Document bounded retry and prepare release 0.11.6 | done | bcb2380 |
 
 ## Goal
@@ -173,6 +174,14 @@ adapter that cannot post to Slack or a chat.
   - Add crash/transaction tests that reject partial states such as a failed run without its retry
     deadline, a cursor advance without its event/reset, or a recovered episode while retry state
     remains active.
+  - Verification: configured per-step unit suite and both plugin validators.
+
+- **2.3 Preserve interval occurrence identity across the 0.11.5 upgrade boundary**
+  - Keep the historical `scheduled_for.isoformat()` external ID for interval timers; retain the
+    revision-scoped `schedule:<id>:r<revision>:<scheduled-for>` identity only for calendar schedules.
+  - Add an upgrade-crash regression that seeds the legacy interval event without cursor advancement,
+    then retries under the new runtime and proves no second event, processor run, or delivery appears.
+  - Make the 0.11.6 roadmap statement release-neutral so the tagged artifact is not immediately stale.
   - Verification: configured per-step unit suite and both plugin validators.
 
 ### Phase 3 — Operator contract and release metadata

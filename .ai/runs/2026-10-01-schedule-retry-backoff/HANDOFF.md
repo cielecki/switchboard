@@ -3,25 +3,24 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T08:57:09Z
+- **Last updated:** 2026-10-01T09:03:41Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** implementation complete / final gate and visual QA
+- **Current phase / step:** 2.3 final-review repair
 - **Last commit:** `bcb2380` (`docs: prepare switchboard 0.11.6`)
 
 ## What just happened
 
-All five implementation steps are complete and pushed. Public documentation now defines bounded
-schedule retry and its boundary from processor deliveries and streams; the 0.11 roadmap reflects
-the deployed inbox migration; all release-bearing metadata is aligned at 0.11.6. The phase
-checkpoint had no configured commands and was recorded as skipped. No release, installation, or
-live verification has occurred yet.
+The configured final gate passed, but independent review found a release-blocking upgrade edge:
+step 2.2 changed interval timer external IDs, so a 0.11.5 crash after event persistence but before
+cursor advancement could be retried under a different ID and duplicate routed work. A scoped 2.3
+repair is now required. The reviewer also found one release-stale roadmap sentence. No release,
+installation, or live verification has occurred.
 
 ## Next concrete action
 
-Run the configured final gate, independent full-diff review, and fresh-context rendered visual QA
-for the final dashboard. If all pass, follow the approved 0.11.6 release/install/live-verification
-runbook without expanding scope.
+Dispatch one executor for step 2.3 only, then rerun the full gate, independent review, and
+fresh-context rendered visual QA on the final revision.
 
 ## Blockers / open questions
 
