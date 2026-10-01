@@ -50,6 +50,24 @@ The process must exit zero and print exactly one object:
   idempotent.
 - Adapters are invoked as argv arrays, never through a shell.
 
+## Scheduled pull attempts
+
+When the supervisor owns a non-stream interval adapter schedule, it creates exactly one adapter run
+for each eligible attempt. Failure keeps the schedule's logical `next_run_at` unchanged and stores a
+retry deadline after 30, 60, 120, 240, 480, and then 900 seconds. Polls before that deadline create
+no run. The deadline and failure streak survive database reopen and supervisor restart.
+
+Switchboard records the terminal failed run, retry state, and internal alert episode update in one
+transaction. After a successful attempt, it records the run, advances the pull cadence, clears retry
+state, and records one episode recovery in one transaction. A material schedule update or
+re-enabling the schedule also clears an existing streak; an identical upsert preserves it. Backoff
+for one adapter does not block another due schedule.
+
+This policy also covers timer and calendar occurrence failures, but it does not apply to persistent
+command streams. It is separate from chat-delivery retry and does not make source-system or
+processor side effects exactly once. Schedule alert episodes are local operator evidence and never
+invoke an external alert command.
+
 ## Persistent command streams
 
 A source that pushes observations may stay connected under the Switchboard supervisor instead of
@@ -66,7 +84,7 @@ The schedule worker remains occupied while the stream is healthy, so the command
 owner. If it exits, the schedule records the outcome and restarts it after the configured delay.
 Supervisor shutdown terminates the stream's complete process group. Secrets stay in the source's
 normal credential store; do not put them in the saved command or environment because schedule
-configuration is observable.
+configuration is observable. Stream restart behavior is unchanged by non-stream schedule backoff.
 
 ## Ingest adapter
 

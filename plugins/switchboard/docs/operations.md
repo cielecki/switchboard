@@ -85,6 +85,43 @@ entry. It preserves all unrelated source configuration and state, the schedule r
 incompatible state without mutation. A second invocation returns `already-repaired` and adds no
 audit entry.
 
+## Schedule retry diagnosis
+
+Every failed non-stream interval or calendar attempt leaves the logical `next_run_at` in place and
+sets a persisted retry deadline. The fixed delays are 30 seconds, 1 minute, 2 minutes, 4 minutes, 8
+minutes, and then 15 minutes for every later failure. Reopening the database or restarting the
+supervisor does not shorten the delay, and supervisor polls before the deadline create no adapter
+run.
+
+Inspect the state through the CLI:
+
+```bash
+switchboard --json schedule list
+switchboard --json adapter runs --limit 20
+switchboard --json doctor
+```
+
+The JSON schedule projection places `state`, `failure_streak`, `last_failure`, `next_retry_at`, and
+the latest internal `episode` under `retry`. Human schedule output shows the deadline, streak,
+episode state, and last failure. The read-only dashboard lists active or inconsistent retry state in
+its needs-attention area.
+
+`doctor` emits `schedule.retry-backoff` while a future deadline blocks an otherwise due schedule and
+`schedule.retry-ready` when the deadline has elapsed. It suppresses the redundant generic overdue
+warning during active backoff. `schedule.retry-state-inconsistent` is an error because the persisted
+schedule and episode no longer describe one coherent failure streak.
+
+The first failure opens one internal schedule alert episode. Later failures update the same episode;
+a successful scheduled attempt, a material schedule update, or re-enable records one recovery and
+clears the retry fields. Repeating an identical schedule upsert preserves active retry state.
+Switchboard keeps these episodes as local evidence. It does not pass them to the command configured
+by `--alert-command-json` or post messages about them to Slack or a chat.
+
+Do not confuse schedule retry with processor-delivery retry, accepted-wake rearming, or
+`command-stream` restart delay. Those mechanisms keep their existing policies. Switchboard also
+does not promise exactly-once external effects; processor workflows must keep their external writes
+idempotent.
+
 ## Doctor
 
 `switchboard doctor` checks database integrity and schema, adapter paths, schedule failures and

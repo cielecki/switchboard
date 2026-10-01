@@ -5,7 +5,8 @@ the web UI only reads the resulting state.
 
 Each cycle:
 
-1. selects enabled adapter schedules whose `next_run_at` has arrived;
+1. selects enabled adapter schedules whose `next_run_at` has arrived; for non-stream schedules, a
+   persisted retry deadline must also be absent or elapsed;
 2. starts each adapter in an independent worker and records completion or failure without blocking
    delivery, alerts, or other schedules;
 3. advances interval schedules by their configured cadence, while calendar schedules preserve an
@@ -17,8 +18,10 @@ Each cycle:
 5. dispatches the oldest eligible wait or processor deliveries, up to the configured per-cycle
    batch limit, when a chats relay is configured, with at most one in-flight processor wake per
    consumer;
-6. opens one consumer-level alert episode after one or more processor deliveries remain unreachable
-   or unclaimed for the threshold, and sends one recovery after the final issue clears;
+6. updates local schedule alert episodes after failed scheduled attempts without calling an external
+   notifier. Separately, it opens one consumer-level alert episode after one or more processor
+   deliveries remain unreachable or unclaimed for the threshold, and sends one recovery after the
+   final issue clears;
 7. writes a heartbeat, cycle time, and combined error summary.
 
 A failed or timed-out source cannot stop the coordinator; Switchboard kills the whole external
@@ -41,6 +44,36 @@ The optional alert adapter is an argv list supplied through `--alert-command-jso
 JSON object on standard input. Switchboard never stores messenger credentials or destinations in
 the repository. Notification and recovery claims are stored before the external command runs.
 An adapter failure remains visible on the episode but is not retried into a notification storm.
+The alert adapter does not handle schedule alert episodes. Switchboard does not post messages about
+those episodes to Slack or chats.
+
+## Scheduled-attempt backoff
+
+A failed non-stream interval or calendar attempt creates one terminal adapter run, keeps the logical
+`next_run_at` unchanged, and sets `retry_not_before`. The deterministic delay sequence is 30, 60,
+120, 240, 480, and then 900 seconds for every later failure. Until that deadline, ordinary supervisor
+polls create no new adapter run. Because the streak and deadline live in SQLite, reopening the
+database or restarting the supervisor does not trigger an early attempt.
+
+The first failure in a consecutive streak opens one internal schedule alert episode. Later failures
+increment the streak and update that episode. A successful scheduled attempt clears the retry state
+and records one recovery. A material schedule update or disabled-to-enabled transition also clears
+the streak and records recovery; an identical upsert does not.
+
+Switchboard records the terminal adapter run and failed retry state in one transaction. For timer
+and calendar occurrences, event persistence, first-match routing, any processor run and delivery,
+cursor advance, retry reset, and episode recovery share the occurrence transaction. One schedule in
+backoff does not block another ready schedule.
+
+Use `schedule list`, `adapter runs`, and `doctor` to inspect the state. The JSON schedule view exposes
+the failure streak, last failure, next retry, and episode under `retry`. The human table shows the
+deadline, streak, episode state, and last failure; the read-only dashboard shows retry status in its
+needs-attention area. For enabled schedules, `doctor` distinguishes active backoff from a retry
+whose deadline has elapsed and reports inconsistent persisted state as an error.
+
+This mechanism excludes `command-stream` schedules. It does not change `--delivery-retry`,
+`--accepted-retry`, stream restart delay, processor attempts, or downstream idempotency requirements.
+The fixed sequence is global and has no per-schedule tuning.
 
 ## CLI control
 
@@ -60,7 +93,8 @@ Calendar schedules support `catch-up-once` and `skip`. Catch-up selects the late
 occurrence and emits at most one event, even after long downtime. A material edit or re-enable
 increments the schedule revision and re-anchors it to the next future occurrence. Ambiguous and
 nonexistent local times use the explicit policies stored with the rule. Failed calendar execution
-does not advance `next_run_at`, so the supervisor can retry without losing the occurrence.
+does not advance `next_run_at`, so the bounded schedule retry can recover without losing the
+occurrence.
 
 Each emitted calendar occurrence uses this durable event external ID, deduplicated within its
 source: `schedule:<schedule-id>:r<revision>:<scheduled-for>`. In one database transaction,

@@ -2,8 +2,17 @@
 
 ## Status
 
-The implementation is complete in the local checkout. Live topology, worker chats, legacy
-schedulers, release, and deployment remain unchanged pending a separate migration decision.
+Version 0.11.5 is published and deployed. The personal inbox schedule runs daily at 07:00
+Europe/Warsaw, and the work inbox schedule runs on weekdays at 09:00 Europe/Warsaw. Both workflows
+use the same durable worker chat, which serializes their runs. The 0.11.5 CLI repaired the live timer
+sources. Verification produced exactly one catch-up event, one processor run, and one delivery for
+each schedule, with no duplicates after repeated polls or a restart.
+
+The pending 0.11.6 release adds persisted bounded retry backoff to every non-stream interval and
+calendar schedule. When an occurrence fails, Switchboard keeps its logical cursor and retries after
+30 seconds, 1 minute, 2 minutes, 4 minutes, 8 minutes, and then every 15 minutes. The first failure
+in the streak opens one local alert episode. The bills workflow has not moved to the live
+Switchboard topology.
 
 ## Outcome
 
@@ -24,9 +33,6 @@ cannot command agents, mutate tasks, or act as a visual workspace.
 
 ## Evidence and prerequisites
 
-- The three in-scope legacy scheduled tasks have accumulated 70 non-archived routine sessions: 34
-  for the personal inbox, 24 for the work inbox, and 12 for bills. Durable chats stop that recurring
-  session creation.
 - Existing timer schedules are fixed UTC intervals. They cannot preserve a Warsaw wall-clock time
   across daylight-saving changes or express weekdays directly.
 - Existing delivery state, same-generation request IDs, and accepted-but-unclaimed rearming already
@@ -35,9 +41,8 @@ cannot command agents, mutate tasks, or act as a visual workspace.
   missed times. Calendar triggers deliberately change this to the latest eligible occurrence.
 - Commit `e0bc533` fixed read-only CLI locking. Commit `d770f15` added regression coverage for an
   open, silent stdin after the caller-side shell bug was fixed. Both are on the published main line.
-- The current development head selects one active delivery per consumer in the normal
-  single-supervisor path. Calendar-trigger tests must preserve this behavior when personal and work
-  occurrences become due together.
+- The deployed personal and work bindings share one consumer. The transactional consumer gate has
+  generic concurrency and backlog regression coverage.
 
 ## Product boundary
 
@@ -88,17 +93,17 @@ The two inbox processors share one durable chat through a consumer-level deliver
 single-supervisor path selects at most one active delivery for the same host and consumer identity.
 Other ready runs remain queued. A terminal outcome or `needs-review` releases the gate.
 
-Version 0.11 must enforce that gate transactionally so independently concurrent dispatch calls
-cannot race. Processor-level leases alone do not protect a chat shared by two processors.
+Version 0.11 enforces that gate transactionally so independently concurrent dispatch calls cannot
+race. Processor-level leases alone do not protect a chat shared by two processors.
 
 Every run carries an immutable profile and occurrence identity. The worker claims the run before
 acting and never infers whether it is processing the personal or work inbox from chat history.
 Wake retries retain the same request ID within one delivery generation. An explicit release, lease
 expiry, or review retry starts a new generation and request ID.
 
-Calendar work must retain this invariant and add coverage for two processors becoming due together.
-If the invariant cannot be preserved, the safe fallback is a separate durable chat for every
-processor.
+The calendar implementation relies on this invariant. A targeted regression with two calendar
+processors becoming due together remains useful. If the invariant cannot be preserved, the safe
+fallback is a separate durable chat for every processor.
 
 ## Initial topology
 
@@ -144,8 +149,13 @@ The read-only schedule view must show:
 - queued, active, delivery-troubled, and `needs-review` work;
 - the durable consumer label and local link when configured.
 
-Version 0.11 must keep an archived or unreachable consumer visible as a delivery problem. Operators
+Version 0.11 keeps an archived or unreachable consumer visible as a delivery problem. Operators
 repair or rebind it through the CLI. Switchboard does not replace it automatically with a new chat.
+
+Schedule failures are also visible without producing chat noise. Version 0.11.6 persists the failure
+streak, last failure, retry deadline, and one internal alert episode. The CLI, `doctor`, and
+read-only dashboard show the same state. These episodes do not invoke the external alert command or
+post Switchboard messages to Slack or chats.
 
 ## Migration
 
@@ -195,6 +205,7 @@ Migrate one workflow at a time:
 
 ## Next release boundary
 
-Review and publish the local 0.11 implementation before changing live state. Live migration then
-proceeds one workflow at a time using private topology and stable worker identifiers; it is not
-part of the implementation commit.
+Version 0.12 may add generic scheduled pull adapters and provide the migration path that replaces
+more of the legacy ingest layer. That work must preserve Switchboard's coordinator boundary:
+adapters normalize observations, while domain policy and external writes stay in processors. It is
+not part of the 0.11.6 retry hardening. The bills workflow remains a separate migration decision.

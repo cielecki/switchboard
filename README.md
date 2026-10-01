@@ -30,6 +30,8 @@ The first vertical slice provides:
 - independently executing schedules with descendant-safe timeouts;
 - deterministic interval and local wall-clock calendar events, grouped human-review resolution,
   and space-filtered queue views;
+- persisted, bounded retry backoff for failed non-stream schedules, with local alert episodes and
+  read-only operator visibility;
 - an action-oriented dashboard with worker health, decision groups, queue lanes, and run lifecycles;
 - declarative topology planning and idempotent apply through the CLI;
 - self-diagnosis plus verified online SQLite backups.
@@ -267,6 +269,27 @@ valid minute after the clock gap. These policies are explicit CLI options. Updat
 a calendar schedule starts a new revision and re-anchors it in the future. Event persistence,
 routing, and schedule advancement share one transaction, so a crash cannot advance past work that
 was not recorded.
+
+Failed non-stream interval and calendar schedules keep their logical `next_run_at` unchanged.
+Switchboard retries after 30 seconds, 1 minute, 2 minutes, 4 minutes, 8 minutes, and then every 15
+minutes. The failure streak and retry deadline survive database reopen and supervisor restart;
+polls before the deadline create no adapter run. A successful scheduled attempt, a material
+schedule update, or re-enabling the schedule clears the retry state. An idempotent update does not.
+
+`schedule list` exposes the failure streak, last failure, retry deadline, and local alert episode in
+JSON; its human table shows the deadline, streak, episode state, and last failure. For enabled
+schedules, `doctor` reports active backoff or a retry that is ready, and treats inconsistent retry
+state as an error. The read-only dashboard shows the same state in its needs-attention area. The
+first failure in a consecutive streak opens one internal schedule alert episode. Later failures
+update it, and recovery closes it once. Switchboard never passes these episodes to the configured
+alert command or posts messages about them to Slack or chats. The delay sequence is a fixed global
+policy and cannot be tuned per schedule.
+
+Schedule retry does not change processor-delivery retries, accepted-wake rearming, command-stream
+restart cadence, or downstream side-effect guarantees. For each timer occurrence, the durable
+exactly-once boundary still covers one logical event, one processor run, and one delivery.
+The run and delivery exist only when an enabled route matches and its processor has an enabled
+binding. Destination workflows must still make external writes idempotent.
 
 Timer and calendar schedules require a source of kind `timer` in the schedule's space. When a
 schedule is created, Switchboard provisions the source if it is missing. If the source belongs to

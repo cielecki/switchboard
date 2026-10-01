@@ -33,11 +33,15 @@ owns no mutations. Delivery adapters wake agent hosts without taking ownership o
 - **Processor attempt:** atomic worker claim with an expiring lease, heartbeat, and terminal state.
 - **Processor alert episode:** consumer-level evidence that one or more deliveries were unreachable
   or accepted but not claimed, followed by a recorded recovery after the final issue clears.
+- **Schedule alert episode:** local evidence for one consecutive non-stream schedule-failure streak.
+  Repeated failures update the same episode; success, material schedule change, or re-enable records
+  one recovery. The episode never enters the external notification path.
 - **Managed resource:** ownership record connecting one declarative topology to the resources it
   may reconcile without taking control of unrelated CLI-created state.
 - **Schedule:** CLI-managed interval cadence or IANA-zone wall-clock calendar rule, with private
-  adapter configuration stored outside the plugin. Calendar event insertion, routing, and cursor
-  advancement commit atomically.
+  adapter configuration stored outside the plugin. Non-stream failures preserve the logical cursor
+  and persist a bounded retry deadline. Timer/calendar event insertion, routing, cursor advancement,
+  retry reset, and episode recovery commit atomically.
 - **Supervisor:** single-instance loop that runs schedules, dispatches deliveries, records a
   heartbeat, and hosts read-only observability.
 
@@ -81,12 +85,21 @@ attempt reaches the transcript late.
 
 The supervisor never converts transport acceptance into task completion. It isolates adapter and
 delivery failures, advances schedules deterministically, and exposes its last heartbeat and error
-without making the web interface a control surface.
+without making the web interface a control surface. Failed non-stream interval and calendar
+schedules use persisted delays of 30, 60, 120, 240, 480, and then 900 seconds. Until the deadline,
+the unchanged logical cursor is not eligible for another attempt. The persisted deadline and
+failure streak survive reopening the database or restarting the supervisor. Polls before the
+deadline create no run, so polling frequency does not inflate run records.
 
 Calendar triggers identify occurrences by schedule, server-managed revision, and scheduled UTC
 instant. After downtime, `catch-up-once` selects the latest eligible occurrence; `skip` advances
 past a multi-occurrence backlog without emitting it. Existing fixed-second interval schedules keep
 their prior anchored-UTC behavior.
+
+Schedule retry applies only to the scheduled attempt. It does not alter processor-delivery retry,
+accepted-wake rearming, command-stream restart semantics, or the requirement that external side
+effects be idempotent. Switchboard stores schedule alert episodes in the database and displays them
+on read-only operator surfaces. It never sends them to the processor alert adapter.
 
 Topology, diagnosis, backup, and every other mutation or operational check remain CLI concerns.
 The read-only HTTP server does not expose an apply, repair, or restore endpoint.
