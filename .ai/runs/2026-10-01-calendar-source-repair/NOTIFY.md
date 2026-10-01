@@ -30,3 +30,10 @@ contract before mutation, and normal-due plus catch-up regression tests prove on
 event/run/delivery across reopen and supervisor-style restart. The full suite has 119 passing
 tests; both plugin validators pass. The checkpoint had no configured commands and was recorded as
 an explicit skip. No live state has been repaired yet.
+
+## 2026-10-01T05:44:58Z — phase 3 checkpoint
+
+Step 3.1 is complete and pushed to `main`. Operator documentation and all release-bearing metadata
+are aligned at 0.11.5; 119 tests, both plugin validators, prose lint, and factual review passed.
+The checkpoint had no configured commands and was recorded as an explicit skip. Implementation is
+complete, while release, installation, and live state remain untouched pending the final gate.

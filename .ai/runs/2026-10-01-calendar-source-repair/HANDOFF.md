@@ -3,26 +3,24 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T05:28:54Z
+- **Last updated:** 2026-10-01T05:44:58Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** Phase 3 / 3.1
-- **Last commit:** `6de32b6` (`test: prove calendar occurrence durability`)
+- **Current phase / step:** implementation complete / final gate
+- **Last commit:** `d33bf40` (`docs: prepare switchboard 0.11.5`)
 
 ## What just happened
 
-Phase 2 is complete. Declarative topology now rejects wrong-space or non-`timer` sources before
-mutation and valid calendar topology remains idempotent and exportable through the shared core
-path. Regression coverage proves one durable event, processor run, and delivery for normal due and
-latest-only `catch-up-once` occurrences across database reopen and supervisor-style restart. No
-production defect was exposed. The checkpoint had no configured commands and was recorded as
-skipped.
+All five implementation steps are complete and pushed. Public documentation now covers the
+canonical timer-source contract, doctor diagnostic, CLI-only repair flow, and the database-scoped
+exactly-once boundary. Package, plugin, marketplace, and lock metadata are aligned at 0.11.5. The
+phase checkpoint had no configured commands and was recorded as skipped. No release, installation,
+or live repair has happened yet.
 
 ## Next concrete action
 
-Dispatch one executor for step 3.1 only: document the operator contract and repair workflow, align
-all public version metadata at 0.11.5, run the configured per-step checks, commit once, update the
-PLAN row, and push `main`.
+Run the configured final gate. If it passes, review the complete issue diff and then follow the
+post-code release/install/live-repair runbook without changing the approved scope.
 
 ## Blockers / open questions
 
