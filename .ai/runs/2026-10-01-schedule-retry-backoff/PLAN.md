@@ -23,6 +23,7 @@
 | 2 | 2.4 | Restore dashboard table readability across responsive viewports | done | f7154da |
 | 2 | 2.5 | Polish operator-facing nulls, contrast, and routing copy | done | 88266e7 |
 | 2 | 2.6 | Make run detail and lifecycle stages historically accurate | done | 8d18122 |
+| 2 | 2.7 | Use terminal attempt time in completed lifecycle stages | todo | — |
 | 3 | 3.1 | Document bounded retry and prepare release 0.11.6 | done | bcb2380 |
 
 ## Goal
@@ -214,6 +215,13 @@ adapter that cannot post to Slack or a chat.
     delivery's current terminal state; later accepted and acknowledged rows retain their own facts.
   - Add focused lifecycle and nested-null presentation tests and require a new fresh-context visual
     QA pass on both final viewports.
+  - Verification: configured per-step unit suite and both plugin validators.
+
+- **2.7 Use terminal attempt time in completed lifecycle stages**
+  - Render terminal worker lifecycle stages at `finished_at`; keep active/running stages anchored to
+    `started_at` so the operator timeline remains chronological and historically accurate.
+  - Add a focused lifecycle regression with distinct start/finish/acknowledgement timestamps and
+    require one final fresh-context visual QA pass.
   - Verification: configured per-step unit suite and both plugin validators.
 
 ### Phase 3 — Operator contract and release metadata

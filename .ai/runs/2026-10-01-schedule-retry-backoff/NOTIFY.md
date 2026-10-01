@@ -92,3 +92,11 @@ Step 2.6 now removes nested nulls only from rendered detail and uses immutable c
 the lifecycle. The suite has 149 passing tests; both plugin validators and embedded JavaScript
 syntax checks pass. The checkpoint had no configured commands and was recorded as an explicit skip.
 Release remains blocked until the final gate, focused independent review, and fresh visual QA pass.
+
+## 2026-10-01T10:42:36Z — terminal lifecycle timestamp repair added
+
+The final gate and focused review passed at 149 tests. Fresh visual QA passed all earlier null,
+contrast, containment, and creation-history repairs across 38 detail regions, then found that a
+completed worker stage still displays its attempt start time instead of `finished_at`. Step 2.7 will
+correct only this terminal timestamp mapping and add a chronology regression. Release remains
+blocked until gate, review, and one final fresh visual QA pass.

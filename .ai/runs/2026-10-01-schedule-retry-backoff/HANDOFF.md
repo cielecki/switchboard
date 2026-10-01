@@ -3,24 +3,24 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T10:28:51Z
+- **Last updated:** 2026-10-01T10:42:36Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** all implementation complete / final gate and visual QA
+- **Current phase / step:** 2.7 terminal lifecycle timestamp repair
 - **Last commit:** `8d18122` (`fix: preserve lifecycle presentation history`)
 
 ## What just happened
 
-Step 2.6 recursively removes nulls only from rendered detail while preserving API JSON, and the
-creation-stage lifecycle row now shows the immutable delivery ID instead of a later terminal state.
-All implementation and review-repair rows are complete at 149 passing tests. The checkpoint had no
-configured commands and was recorded as skipped. No release, installation, or live verification
-has occurred.
+The final gate and focused code review pass at 149 tests. Fresh visual QA passed every prior defect
+and all 38 detail regions, then found one remaining lifecycle error: a terminal `worker completed`
+stage uses `started_at` rather than `finished_at`, making the timeline appear nonchronological.
+Step 2.7 owns only this timestamp mapping and its regression. No release, installation, or live
+verification has occurred.
 
 ## Next concrete action
 
-Run the full gate, focused independent review, and a new fresh-context visual QA pass on the final
-revision. Release only if all three pass.
+Dispatch one executor for step 2.7, then run the full gate, focused independent review, and one new
+fresh-context visual QA pass. Release only if all three pass.
 
 ## Blockers / open questions
 
