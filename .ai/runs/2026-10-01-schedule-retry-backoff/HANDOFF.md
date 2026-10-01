@@ -3,27 +3,25 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T08:37:43Z
+- **Last updated:** 2026-10-01T08:57:09Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** 3.1
-- **Last commit:** `f699d15` (`test: prove schedule retry recovery invariants`)
+- **Current phase / step:** implementation complete / final gate and visual QA
+- **Last commit:** `bcb2380` (`docs: prepare switchboard 0.11.6`)
 
 ## What just happened
 
-Phase 2 is complete. CLI, doctor, the read-only dashboard, and topology now share one retry-state
-projection without adding a mutation surface. Deterministic integration and rollback tests cover
-every retry delay, reopen/restart, isolation, recovery, alert lifecycle, and routed interval and
-calendar occurrences without duplicates. The tests also corrected interval timers to use the same
-stable occurrence identity as calendar schedules. Checkpoint and UI runners had no configured
-commands and were recorded as skipped; independent rendered visual QA remains required before
-release.
+All five implementation steps are complete and pushed. Public documentation now defines bounded
+schedule retry and its boundary from processor deliveries and streams; the 0.11 roadmap reflects
+the deployed inbox migration; all release-bearing metadata is aligned at 0.11.6. The phase
+checkpoint had no configured commands and was recorded as skipped. No release, installation, or
+live verification has occurred yet.
 
 ## Next concrete action
 
-Dispatch one executor for step 3.1. It should document bounded retry, update the deployed 0.11
-roadmap status, align all release metadata at 0.11.6, run the configured per-step checks, commit
-once, update the PLAN row, and push `main`.
+Run the configured final gate, independent full-diff review, and fresh-context rendered visual QA
+for the final dashboard. If all pass, follow the approved 0.11.6 release/install/live-verification
+runbook without expanding scope.
 
 ## Blockers / open questions
 

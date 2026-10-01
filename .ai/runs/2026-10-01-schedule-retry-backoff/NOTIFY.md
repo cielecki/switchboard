@@ -30,3 +30,11 @@ and topology behavior plus deterministic restart/recovery coverage passed 144 un
 plugin validators. The regression suite exposed and fixed interval timer occurrence identity within
 scope. Checkpoint and UI runners had no configured commands, so both completed as explicit skips.
 Independent rendered visual QA is still required before release. No live state changed.
+
+## 2026-10-01T08:57:09Z — phase 3 checkpoint
+
+Step 3.1 is complete and pushed to `main`. Documentation, the deployed 0.11 roadmap status, and all
+release-bearing metadata are aligned at 0.11.6. The full suite remains at 144 passing tests; both
+plugin validators, prose lint, and factual review pass. The checkpoint had no configured commands
+and was recorded as an explicit skip. Release, installation, and live state remain untouched pending
+the final gate, full-diff review, and rendered visual QA.
