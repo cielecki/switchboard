@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from switchboard import core
 from switchboard.db import Database
@@ -13,6 +14,7 @@ from switchboard.topology import (
     export_topology,
     load_topology,
     plan_topology,
+    validate_topology,
 )
 
 
@@ -146,15 +148,103 @@ class TopologyTest(unittest.TestCase):
             },
         }
 
-        first = apply_topology(self.db, document)
+        with mock.patch.object(
+            core,
+            "upsert_calendar_schedule",
+            wraps=core.upsert_calendar_schedule,
+        ) as upsert_calendar_schedule:
+            first = apply_topology(self.db, document)
+        upsert_calendar_schedule.assert_called_once()
         second = apply_topology(self.db, document)
         exported = export_topology(self.db, include_local_values=True)
 
         self.assertEqual(first["conflicts"], 0)
         self.assertTrue(all(item["action"] == "noop" for item in second["operations"]))
         schedule = next(item for item in exported["schedules"] if item["id"] == "weekday")
+        source = next(item for item in exported["sources"] if item["id"] == "timer/demo")
         self.assertEqual(schedule["schedule_kind"], "calendar")
         self.assertNotIn("every_seconds", schedule)
+        self.assertEqual(source["space"], "demo")
+        self.assertEqual(source["kind"], "timer")
+        validate_topology(exported)
+
+    def test_timer_schedules_reject_incompatible_declared_sources_before_mutation(
+        self,
+    ) -> None:
+        cases = (
+            ("calendar", "demo", "calendar"),
+            ("interval", "other", "timer"),
+        )
+        for schedule_kind, source_space, source_kind in cases:
+            with self.subTest(schedule_kind=schedule_kind):
+                directory = tempfile.TemporaryDirectory()
+                self.addCleanup(directory.cleanup)
+                db = Database(Path(directory.name) / "switchboard.sqlite3")
+                db.initialize()
+                document = json.loads(json.dumps(self.document))
+                if source_space != "demo":
+                    document["spaces"].append({"id": source_space, "name": "Other"})
+                document["sources"][0]["space"] = source_space
+                document["sources"][0]["kind"] = source_kind
+                if schedule_kind == "calendar":
+                    document["schedules"][0].update(
+                        {
+                            "schedule_kind": "calendar",
+                            "config": {
+                                **document["schedules"][0]["config"],
+                                "calendar": {
+                                    "local_time": "07:00",
+                                    "timezone": "Europe/Warsaw",
+                                    "weekdays": ["mon", "tue", "wed", "thu", "fri"],
+                                    "missed_policy": "catch-up-once",
+                                    "ambiguous_time_policy": "first",
+                                    "nonexistent_time_policy": "next-valid",
+                                },
+                            },
+                        }
+                    )
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    rf"timer schedule daily source timer/demo is declared as "
+                    rf"{source_space} / {source_kind}; expected demo / timer",
+                ):
+                    apply_topology(db, document)
+
+                for table in (
+                    "spaces",
+                    "sources",
+                    "adapter_schedules",
+                    "managed_resources",
+                ):
+                    self.assertEqual(
+                        db.row(f"SELECT COUNT(*) AS value FROM {table}")["value"],
+                        0,
+                    )
+
+    def test_invalid_topology_cannot_restore_repaired_source_kind(self) -> None:
+        apply_topology(self.db, self.document)
+        source_before = self.db.row("SELECT * FROM sources WHERE id='timer/demo'")
+        managed_before = self.db.rows(
+            "SELECT * FROM managed_resources ORDER BY resource_type"
+        )
+        invalid = json.loads(json.dumps(self.document))
+        invalid["sources"][0]["kind"] = "calendar"
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"timer schedule daily source timer/demo is declared as demo / calendar; "
+            r"expected demo / timer",
+        ):
+            apply_topology(self.db, invalid)
+
+        self.assertEqual(
+            self.db.row("SELECT * FROM sources WHERE id='timer/demo'"), source_before
+        )
+        self.assertEqual(
+            self.db.rows("SELECT * FROM managed_resources ORDER BY resource_type"),
+            managed_before,
+        )
 
     def test_stream_schedule_export_plans_and_applies_idempotently(self) -> None:
         core.upsert_stream_schedule(

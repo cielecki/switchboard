@@ -86,6 +86,7 @@ def validate_topology(document: dict[str, Any]) -> None:
     source_ids = {item.get("id") for item in sources}
     if None in source_ids or len(source_ids) != len(sources):
         raise ValueError("topology source ids must be present and unique")
+    sources_by_id = {item["id"]: item for item in sources}
     for source in sources:
         if source.get("space") not in space_ids:
             raise ValueError(
@@ -156,10 +157,22 @@ def validate_topology(document: dict[str, Any]) -> None:
             raise ValueError(
                 f"schedule {schedule.get('id')} references an undeclared space"
             )
-        if adapter == "timer" and config.get("source_id") not in source_ids:
-            raise ValueError(
-                f"schedule {schedule.get('id')} references an undeclared source"
-            )
+        if adapter == "timer":
+            source_id = config.get("source_id")
+            if source_id not in source_ids:
+                raise ValueError(
+                    f"schedule {schedule.get('id')} references an undeclared source"
+                )
+            source = sources_by_id[source_id]
+            if (
+                source.get("space") != config.get("space_id")
+                or source.get("kind") != "timer"
+            ):
+                raise ValueError(
+                    f"timer schedule {schedule.get('id')} source {source_id} is declared as "
+                    f"{source.get('space')} / {source.get('kind')}; expected "
+                    f"{config.get('space_id')} / timer"
+                )
         if adapter == "command-stream":
             command = config.get("command")
             if (
