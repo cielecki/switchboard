@@ -3,24 +3,24 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T10:08:48Z
+- **Last updated:** 2026-10-01T10:24:38Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** all implementation complete / final gate and review
+- **Current phase / step:** 2.6 final lifecycle presentation repair
 - **Last commit:** `88266e7` (`fix: polish dashboard presentation`)
 
 ## What just happened
 
-Step 2.5 resolved the last review findings: completed-run presentation omits absent errors while the
-API preserves null, muted text now measures 4.5707:1, and README correctly separates route-created
-runs from binding-created deliveries. All implementation and review-repair rows are complete. The
-checkpoint had no configured commands and was recorded as skipped. No release, installation, or
-live verification has occurred.
+The final gate and independent code review pass at 147 tests, but fresh visual QA found two
+remaining lifecycle presentation defects. A nested nullable fact still renders as raw `null`, and
+the `wake created` row shows the delivery's current acknowledged state rather than stable
+creation-time evidence. Step 2.6 owns only these presentation semantics. No release, installation,
+or live verification has occurred.
 
 ## Next concrete action
 
-Run the full gate, independent complete-diff review, and a new fresh-context visual QA pass on the
-final revision. Release only if all three pass.
+Dispatch one executor for step 2.6, then rerun the full gate and a new fresh-context visual QA pass.
+Release only if both pass.
 
 ## Blockers / open questions
 

@@ -77,3 +77,11 @@ Step 2.5 resolved the remaining run-detail null, contrast, and README accuracy f
 now has 147 passing tests; both plugin validators and embedded JavaScript syntax checks pass. The
 checkpoint had no configured commands and was recorded as an explicit skip. All plan rows are done;
 release remains blocked until the repeated final gate, independent review, and fresh visual QA pass.
+
+## 2026-10-01T10:24:38Z — lifecycle presentation repair added
+
+The repeated final gate passed 147 tests and independent code review returned PASS. Fresh visual QA
+still found raw `null` in a nested completed-run fact and a misleading terminal state in the
+creation-stage lifecycle row. Step 2.6 will add recursive presentation-only null handling and stable
+creation-time evidence without changing API data or retry behavior. Release remains blocked until
+the step, final gate, and another fresh visual QA pass.

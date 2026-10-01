@@ -22,6 +22,7 @@
 | 2 | 2.3 | Preserve interval occurrence identity across the 0.11.5 upgrade boundary | done | f0fa967 |
 | 2 | 2.4 | Restore dashboard table readability across responsive viewports | done | f7154da |
 | 2 | 2.5 | Polish operator-facing nulls, contrast, and routing copy | done | 88266e7 |
+| 2 | 2.6 | Make run detail and lifecycle stages historically accurate | todo | — |
 | 3 | 3.1 | Document bounded retry and prepare release 0.11.6 | done | bcb2380 |
 
 ## Goal
@@ -204,6 +205,15 @@ adapter that cannot post to Slack or a chat.
   - Correct README routing language: a matching enabled route creates a processor run, while an
     enabled processor binding additionally creates its delivery.
   - Add focused presentation assertions and require another fresh-context visual QA pass.
+  - Verification: configured per-step unit suite and both plugin validators.
+
+- **2.6 Make run detail and lifecycle stages historically accurate**
+  - Apply presentation-only recursive null handling to the rendered run detail so any nullable
+    structured fact follows the same omission/placeholder convention while API JSON remains intact.
+  - Make the `wake created` lifecycle row display stable creation-time evidence rather than the
+    delivery's current terminal state; later accepted and acknowledged rows retain their own facts.
+  - Add focused lifecycle and nested-null presentation tests and require a new fresh-context visual
+    QA pass on both final viewports.
   - Verification: configured per-step unit suite and both plugin validators.
 
 ### Phase 3 — Operator contract and release metadata
