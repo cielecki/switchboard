@@ -82,21 +82,25 @@ def run_ingest_shadow(
     space_id: str = "personal-ingest",
     timeout: int = 120,
     runner: Any = run_bounded,
+    run_id: str | None = None,
+    finalize_run: bool = True,
 ) -> dict[str, Any]:
     script = Path(status_script).expanduser().resolve()
     if not script.is_file():
         raise AdapterError(f"ingest status script not found: {script}")
-    run = core.start_adapter_run(db, "ingest-shadow")
+    if run_id is None and not finalize_run:
+        raise ValueError("deferred adapter finalization requires a run id")
+    run = {"id": run_id} if run_id else core.start_adapter_run(db, "ingest-shadow")
+
+    def fail(detail: str) -> None:
+        if finalize_run:
+            core.finish_adapter_run(db, run["id"], state="failed", detail=detail)
+
     discovery: dict[str, Any] | None = None
     if discovery_script is not None:
         discovery_path = Path(discovery_script).expanduser().resolve()
         if not discovery_path.is_file():
-            core.finish_adapter_run(
-                db,
-                run["id"],
-                state="failed",
-                detail=f"discovery script not found: {discovery_path}",
-            )
+            fail(f"discovery script not found: {discovery_path}")
             raise AdapterError(f"ingest discovery script not found: {discovery_path}")
         environment = dict(os.environ)
         environment.update({"MAX_POLLS": "1", "INTERVAL": "0", "STOP_AT": ""})
@@ -109,11 +113,11 @@ def run_ingest_shadow(
                 env=environment,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+            fail(str(exc))
             raise AdapterError(f"ingest discovery failed: {exc}") from exc
         if discovered.returncode != 0:
             detail = (discovered.stderr or discovered.stdout)[-2000:]
-            core.finish_adapter_run(db, run["id"], state="failed", detail=detail)
+            fail(detail)
             raise AdapterError(f"ingest discovery exited {discovered.returncode}: {detail}")
         discovery = {
             "enabled": True,
@@ -125,24 +129,29 @@ def run_ingest_shadow(
     try:
         result = runner(command, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+        fail(str(exc))
         raise AdapterError(f"ingest status failed: {exc}") from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout)[-2000:]
-        core.finish_adapter_run(db, run["id"], state="failed", detail=detail)
+        fail(detail)
         if result.returncode == 3:
             raise AdapterError(f"ingest source is stale; shadow import refused: {detail}")
         raise AdapterError(f"ingest status exited {result.returncode}: {detail}")
     try:
         rows = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+        fail(str(exc))
         raise AdapterError(f"ingest status returned invalid JSON: {exc}") from exc
     try:
         snapshot = snapshot_from_rows(rows, space_id=space_id)
     except Exception as exc:
-        core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+        fail(str(exc))
         raise
-    result = apply_snapshot(db, snapshot, run_id=run["id"])
+    result = apply_snapshot(
+        db,
+        snapshot,
+        run_id=run["id"],
+        finalize_run=finalize_run,
+    )
     result["discovery"] = discovery or {"enabled": False}
     return result

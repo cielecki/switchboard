@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -235,6 +235,7 @@ CREATE TABLE IF NOT EXISTS source_health (
 CREATE TABLE IF NOT EXISTS adapter_runs (
     id TEXT PRIMARY KEY,
     adapter TEXT NOT NULL,
+    schedule_id TEXT REFERENCES adapter_schedules(id) ON DELETE SET NULL,
     state TEXT NOT NULL CHECK(state IN ('running', 'completed', 'failed')),
     started_at TEXT NOT NULL,
     completed_at TEXT,
@@ -334,6 +335,8 @@ ON processor_alerts(consumer) WHERE state='open' AND consumer IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_delivery_attempts_delivery ON delivery_attempts(delivery_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_source_health_source ON source_health(source_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_runs_started ON adapter_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_adapter_runs_schedule
+ON adapter_runs(schedule_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_schedules_due
 ON adapter_schedules(enabled, next_run_at, retry_not_before);
 CREATE INDEX IF NOT EXISTS idx_schedule_alert_episodes_schedule
@@ -514,6 +517,15 @@ def migrate(connection: sqlite3.Connection) -> None:
             connection.execute(
                 f"ALTER TABLE adapter_schedules ADD COLUMN {name} {declaration}"
             )
+    adapter_run_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(adapter_runs)").fetchall()
+    }
+    if adapter_run_columns and "schedule_id" not in adapter_run_columns:
+        connection.execute(
+            "ALTER TABLE adapter_runs ADD COLUMN schedule_id TEXT "
+            "REFERENCES adapter_schedules(id) ON DELETE SET NULL"
+        )
     # v9's index has the same name but does not cover the persisted retry gate.
     connection.execute("DROP INDEX IF EXISTS idx_adapter_schedules_due")
     connection.executescript(SCHEMA)

@@ -119,6 +119,8 @@ def run_inbound_leads(
     python: str = sys.executable,
     timeout: int = 240,
     runner: Any = run_bounded,
+    run_id: str | None = None,
+    finalize_run: bool = True,
 ) -> dict[str, Any]:
     if not profile:
         raise AdapterError("inbound profile cannot be empty")
@@ -131,14 +133,19 @@ def run_inbound_leads(
     ledger = Path(ledger_script).expanduser().resolve()
     if not ledger.is_file():
         raise AdapterError(f"inbound ledger script not found: {ledger}")
-    run = core.start_adapter_run(db, "inbound-leads")
+    if run_id is None and not finalize_run:
+        raise ValueError("deferred adapter finalization requires a run id")
+    run = {"id": run_id} if run_id else core.start_adapter_run(db, "inbound-leads")
+
+    def fail(detail: str) -> None:
+        if finalize_run:
+            core.finish_adapter_run(db, run["id"], state="failed", detail=detail)
+
     discovery: dict[str, Any] = {"gmail": {"enabled": False}, "slack": {"enabled": False}}
     if source_mode in {"both", "gmail"} and discovery_script is not None:
         script = Path(discovery_script).expanduser().resolve()
         if not script.is_file():
-            core.finish_adapter_run(
-                db, run["id"], state="failed", detail=f"discovery script not found: {script}"
-            )
+            fail(f"discovery script not found: {script}")
             raise AdapterError(f"inbound discovery script not found: {script}")
         environment = dict(os.environ)
         environment.update(
@@ -153,11 +160,11 @@ def run_inbound_leads(
                 env=environment,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+            fail(str(exc))
             raise AdapterError(f"inbound discovery failed: {exc}") from exc
         if discovered.returncode != 0:
             detail = (discovered.stderr or discovered.stdout)[-2000:]
-            core.finish_adapter_run(db, run["id"], state="failed", detail=detail)
+            fail(detail)
             raise AdapterError(f"inbound discovery exited {discovered.returncode}: {detail}")
         discovery["gmail"] = {
             "enabled": True,
@@ -176,11 +183,11 @@ def run_inbound_leads(
                 timeout=timeout,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+            fail(str(exc))
             raise AdapterError(f"inbound ledger read failed: {exc}") from exc
         if pending.returncode != 0:
             detail = (pending.stderr or pending.stdout)[-2000:]
-            core.finish_adapter_run(db, run["id"], state="failed", detail=detail)
+            fail(detail)
             raise AdapterError(f"inbound ledger exited {pending.returncode}: {detail}")
         try:
             import json
@@ -188,19 +195,14 @@ def run_inbound_leads(
             rows = json.loads(pending.stdout)
             snapshot_from_pending(rows, profile=profile, space_id=space_id)
         except Exception as exc:
-            core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+            fail(str(exc))
             raise
 
     slack_lines: list[str] | None = None
     if source_mode in {"both", "slack"} and slack_discovery_script is not None:
         slack_script = Path(slack_discovery_script).expanduser().resolve()
         if not slack_script.is_file():
-            core.finish_adapter_run(
-                db,
-                run["id"],
-                state="failed",
-                detail=f"Slack discovery script not found: {slack_script}",
-            )
+            fail(f"Slack discovery script not found: {slack_script}")
             raise AdapterError(f"inbound Slack discovery script not found: {slack_script}")
         environment = dict(os.environ)
         environment.update(
@@ -215,11 +217,11 @@ def run_inbound_leads(
                 env=environment,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+            fail(str(exc))
             raise AdapterError(f"inbound Slack discovery failed: {exc}") from exc
         if discovered_slack.returncode != 0:
             detail = (discovered_slack.stderr or discovered_slack.stdout)[-2000:]
-            core.finish_adapter_run(db, run["id"], state="failed", detail=detail)
+            fail(detail)
             raise AdapterError(
                 f"inbound Slack discovery exited {discovered_slack.returncode}: {detail}"
             )
@@ -233,8 +235,13 @@ def run_inbound_leads(
             rows, profile=profile, space_id=space_id, slack_lines=slack_lines
         )
     except Exception as exc:
-        core.finish_adapter_run(db, run["id"], state="failed", detail=str(exc))
+        fail(str(exc))
         raise
-    result = apply_snapshot(db, snapshot, run_id=run["id"])
+    result = apply_snapshot(
+        db,
+        snapshot,
+        run_id=run["id"],
+        finalize_run=finalize_run,
+    )
     result["discovery"] = discovery
     return result

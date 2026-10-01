@@ -47,14 +47,20 @@ def validate_snapshot(value: object) -> dict[str, Any]:
 
 
 def apply_snapshot(
-    db: Database, snapshot: dict[str, Any], *, run_id: str | None = None
+    db: Database,
+    snapshot: dict[str, Any],
+    *,
+    run_id: str | None = None,
+    finalize_run: bool = True,
 ) -> dict[str, Any]:
     try:
         snapshot = validate_snapshot(snapshot)
     except Exception as exc:
-        if run_id:
+        if run_id and finalize_run:
             core.finish_adapter_run(db, run_id, state="failed", detail=str(exc))
         raise
+    if run_id is None and not finalize_run:
+        raise ValueError("deferred adapter finalization requires a run id")
     run = {"id": run_id} if run_id else core.start_adapter_run(db, snapshot["adapter"])
     created_sources = 0
     emitted_events = 0
@@ -85,29 +91,40 @@ def apply_snapshot(
             deduplicated_events += int(result["deduplicated"])
             emitted_events += int(not result["deduplicated"])
             results.append(result)
-        terminal = core.finish_adapter_run(
-            db,
-            run["id"],
-            state="completed",
-            discovered_sources=len(snapshot["sources"]),
-            emitted_events=emitted_events,
-            deduplicated_events=deduplicated_events,
-        )
+        if finalize_run:
+            terminal = core.finish_adapter_run(
+                db,
+                run["id"],
+                state="completed",
+                discovered_sources=len(snapshot["sources"]),
+                emitted_events=emitted_events,
+                deduplicated_events=deduplicated_events,
+            )
+        else:
+            terminal = {
+                "id": run["id"],
+                "state": "running",
+                "discovered_sources": len(snapshot["sources"]),
+                "emitted_events": emitted_events,
+                "deduplicated_events": deduplicated_events,
+                "detail": "",
+            }
         return {
             "run": terminal,
             "created_sources": created_sources,
             "events": results,
         }
     except Exception as exc:
-        core.finish_adapter_run(
-            db,
-            run["id"],
-            state="failed",
-            discovered_sources=len(snapshot.get("sources") or []),
-            emitted_events=emitted_events,
-            deduplicated_events=deduplicated_events,
-            detail=str(exc),
-        )
+        if finalize_run:
+            core.finish_adapter_run(
+                db,
+                run["id"],
+                state="failed",
+                discovered_sources=len(snapshot.get("sources") or []),
+                emitted_events=emitted_events,
+                deduplicated_events=deduplicated_events,
+                detail=str(exc),
+            )
         raise
 
 

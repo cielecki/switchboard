@@ -116,6 +116,51 @@ class MigrationTest(unittest.TestCase):
                 )
             )
 
+    def test_v10_adapter_runs_gain_schedule_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "switchboard.sqlite3"
+            with sqlite3.connect(path) as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    INSERT INTO schema_meta VALUES('schema_version', '10');
+                    CREATE TABLE adapter_runs (
+                        id TEXT PRIMARY KEY,
+                        adapter TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        discovered_sources INTEGER NOT NULL DEFAULT 0,
+                        emitted_events INTEGER NOT NULL DEFAULT 0,
+                        deduplicated_events INTEGER NOT NULL DEFAULT 0,
+                        detail TEXT NOT NULL DEFAULT ''
+                    );
+                    INSERT INTO adapter_runs(id, adapter, state, started_at)
+                    VALUES('legacy-run', 'external', 'completed',
+                           '2026-10-01T08:00:00+00:00');
+                    """
+                )
+
+            Database(path).initialize()
+
+            db = Database(path)
+            columns = {
+                row["name"]
+                for row in db.rows("PRAGMA table_info(adapter_runs)")
+            }
+            self.assertIn("schedule_id", columns)
+            self.assertIsNone(
+                db.row("SELECT schedule_id FROM adapter_runs WHERE id='legacy-run'")[
+                    "schedule_id"
+                ]
+            )
+            self.assertIsNotNone(
+                db.row(
+                    "SELECT name FROM sqlite_master WHERE type='index' "
+                    "AND name='idx_adapter_runs_schedule'"
+                )
+            )
+
     def test_v7_review_backfill_groups_shared_decision_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "switchboard.sqlite3"

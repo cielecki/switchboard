@@ -121,7 +121,59 @@ def _execute_schedule(
                 "error": detail,
                 "schedule": terminal,
             }
-    core.mark_schedule_started(db, schedule["id"], started_at or core.now())
+    if schedule["adapter"] == "timer":
+        try:
+            return core.execute_due_timer_schedule(
+                db, schedule["id"], triggered_at=started_at or core.now()
+            )
+        except Exception as exc:  # noqa: BLE001 - one source must not stop the coordinator
+            detail = str(exc)
+            terminal = core.mark_timer_schedule_failed(
+                db, schedule["id"], detail, failed_at=core.now()
+            )
+            return {
+                "id": schedule["id"],
+                "state": "failed",
+                "error": detail,
+                "schedule": terminal,
+            }
+    if schedule["adapter"] == "command-stream":
+        core.mark_schedule_started(db, schedule["id"], started_at or core.now())
+        try:
+            config = schedule["config"]
+            result = stream_runner(
+                db,
+                command=config["command"],
+                environment=config.get("environment") or {},
+            )
+            terminal = core.mark_schedule_finished(
+                db, schedule["id"], state="completed", finished_at=core.now()
+            )
+            return {
+                "id": schedule["id"],
+                "state": "completed",
+                "run": result["run"],
+                "schedule": terminal,
+            }
+        except Exception as exc:  # noqa: BLE001 - stream restart behavior stays unchanged
+            detail = str(exc)
+            terminal = core.mark_schedule_finished(
+                db,
+                schedule["id"],
+                state="failed",
+                error=detail,
+                finished_at=core.now(),
+            )
+            return {
+                "id": schedule["id"],
+                "state": "failed",
+                "error": detail,
+                "schedule": terminal,
+            }
+
+    attempt = core.start_scheduled_adapter_run(
+        db, schedule["id"], started_at=started_at or core.now()
+    )
     try:
         config = schedule["config"]
         if schedule["adapter"] == "ingest-shadow":
@@ -131,6 +183,8 @@ def _execute_schedule(
                 discovery_script=config.get("discovery_script"),
                 space_id=config["space_id"],
                 timeout=config["timeout"],
+                run_id=attempt["id"],
+                finalize_run=False,
             )
         elif schedule["adapter"] == "inbound-leads":
             result = inbound_runner(
@@ -142,38 +196,35 @@ def _execute_schedule(
                 slack_discovery_script=config.get("slack_discovery_script"),
                 source_mode=config.get("source_mode", "both"),
                 timeout=config["timeout"],
-            )
-        elif schedule["adapter"] == "timer":
-            result = timer_runner(
-                db,
-                space_id=config["space_id"],
-                source_id=config["source_id"],
-                event_type=config["event_type"],
-                scheduled_for=schedule["next_run_at"],
-                attributes=config.get("attributes") or {},
-            )
-        elif schedule["adapter"] == "command-stream":
-            result = stream_runner(
-                db,
-                command=config["command"],
-                environment=config.get("environment") or {},
+                run_id=attempt["id"],
+                finalize_run=False,
             )
         else:
             raise ValueError(f"unsupported scheduled adapter: {schedule['adapter']}")
-        terminal = core.mark_schedule_finished(
-            db, schedule["id"], state="completed", finished_at=core.now()
+        run = result.get("run") or {}
+        terminal = core.finish_scheduled_adapter_run(
+            db,
+            schedule["id"],
+            attempt["id"],
+            state="completed",
+            discovered_sources=int(run.get("discovered_sources") or 0),
+            emitted_events=int(run.get("emitted_events") or 0),
+            deduplicated_events=int(run.get("deduplicated_events") or 0),
+            detail=str(run.get("detail") or ""),
+            finished_at=core.now(),
         )
         return {
             "id": schedule["id"],
             "state": "completed",
-            "run": result["run"],
-            "schedule": terminal,
+            "run": terminal["run"],
+            "schedule": terminal["schedule"],
         }
     except Exception as exc:  # noqa: BLE001 - one source must not stop the coordinator
         detail = str(exc)
-        terminal = core.mark_schedule_finished(
+        terminal = core.finish_scheduled_adapter_run(
             db,
             schedule["id"],
+            attempt["id"],
             state="failed",
             error=detail,
             finished_at=core.now(),
@@ -182,7 +233,7 @@ def _execute_schedule(
             "id": schedule["id"],
             "state": "failed",
             "error": detail,
-            "schedule": terminal,
+            "schedule": terminal["schedule"],
         }
 
 

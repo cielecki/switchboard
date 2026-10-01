@@ -240,6 +240,34 @@ def finish_adapter_run(
     }
 
 
+def _finish_adapter_run(
+    connection: sqlite3.Connection,
+    run_id: str,
+    *,
+    state: str,
+    completed_at: str,
+    discovered_sources: int = 0,
+    emitted_events: int = 0,
+    deduplicated_events: int = 0,
+    detail: str = "",
+) -> None:
+    changed = connection.execute(
+        "UPDATE adapter_runs SET state=?, completed_at=?, discovered_sources=?, "
+        "emitted_events=?, deduplicated_events=?, detail=? WHERE id=? AND state='running'",
+        (
+            state,
+            completed_at,
+            discovered_sources,
+            emitted_events,
+            deduplicated_events,
+            detail,
+            run_id,
+        ),
+    ).rowcount
+    if not changed:
+        raise ValueError(f"running adapter run not found: {run_id}")
+
+
 def list_adapter_runs(db: Database, limit: int = 50) -> list[dict[str, Any]]:
     return db.rows("SELECT * FROM adapter_runs ORDER BY started_at DESC LIMIT ?", (limit,))
 
@@ -288,6 +316,63 @@ def _reset_schedule_retry_state(
         "recovered_at=?, recovery_reason=? WHERE schedule_id=? AND state='open'",
         (reset_at, reset_at, reason, schedule_id),
     )
+
+
+def _record_schedule_failure(
+    connection: sqlite3.Connection,
+    schedule: sqlite3.Row,
+    *,
+    failed_at: str,
+    detail: str,
+) -> tuple[int, str]:
+    failure_streak = int(schedule["failure_streak"]) + 1
+    retry_not_before = (
+        datetime.fromisoformat(failed_at)
+        + timedelta(seconds=schedule_retry_delay_seconds(failure_streak))
+    ).isoformat()
+    connection.execute(
+        "UPDATE adapter_schedules SET last_started_at=COALESCE(last_started_at, ?), "
+        "last_finished_at=?, last_state='failed', last_error=?, failure_streak=?, "
+        "last_failure_at=?, last_failure_detail=?, retry_not_before=?, updated_at=? "
+        "WHERE id=?",
+        (
+            failed_at,
+            failed_at,
+            detail,
+            failure_streak,
+            failed_at,
+            detail,
+            retry_not_before,
+            failed_at,
+            schedule["id"],
+        ),
+    )
+    episode = connection.execute(
+        "SELECT * FROM schedule_alert_episodes WHERE schedule_id=? AND state='open'",
+        (schedule["id"],),
+    ).fetchone()
+    if episode is None:
+        connection.execute(
+            "INSERT INTO schedule_alert_episodes("
+            "id, schedule_id, state, opened_at, updated_at, failure_count, "
+            "last_failure_at, detail) VALUES(?,?,'open',?,?,?,?,?)",
+            (
+                make_id("salert"),
+                schedule["id"],
+                failed_at,
+                failed_at,
+                failure_streak,
+                failed_at,
+                detail,
+            ),
+        )
+    else:
+        connection.execute(
+            "UPDATE schedule_alert_episodes SET updated_at=?, failure_count=?, "
+            "last_failure_at=?, detail=? WHERE id=?",
+            (failed_at, failure_streak, failed_at, detail, episode["id"]),
+        )
+    return failure_streak, retry_not_before
 
 
 def upsert_ingest_schedule(
@@ -1074,6 +1159,121 @@ def mark_schedule_started(db: Database, schedule_id: str, started_at: str | None
         )
 
 
+def start_scheduled_adapter_run(
+    db: Database, schedule_id: str, *, started_at: str | None = None
+) -> dict[str, Any]:
+    """Start one supervisor-owned run for a non-stream interval schedule."""
+
+    db.initialize()
+    timestamp = started_at or now()
+    run_id = make_id("run")
+    with db.transaction() as connection:
+        schedule = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        if schedule is None:
+            raise ValueError(f"schedule not found: {schedule_id}")
+        if schedule["schedule_kind"] != "interval" or schedule["adapter"] == "command-stream":
+            raise ValueError(
+                f"schedule {schedule_id} is not a supervised non-stream interval schedule"
+            )
+        connection.execute(
+            "INSERT INTO adapter_runs(id, adapter, schedule_id, state, started_at) "
+            "VALUES(?,?,?,?,?)",
+            (run_id, schedule["adapter"], schedule_id, "running", timestamp),
+        )
+        connection.execute(
+            "UPDATE adapter_schedules SET last_started_at=?, last_state=NULL, "
+            "last_error=NULL, updated_at=? WHERE id=?",
+            (timestamp, timestamp, schedule_id),
+        )
+    return {
+        "id": run_id,
+        "adapter": schedule["adapter"],
+        "state": "running",
+        "started_at": timestamp,
+    }
+
+
+def finish_scheduled_adapter_run(
+    db: Database,
+    schedule_id: str,
+    run_id: str,
+    *,
+    state: str,
+    error: str | None = None,
+    discovered_sources: int = 0,
+    emitted_events: int = 0,
+    deduplicated_events: int = 0,
+    detail: str = "",
+    finished_at: str | None = None,
+) -> dict[str, Any]:
+    """Atomically terminalize a pull-adapter run and its schedule retry state."""
+
+    if state not in {"completed", "failed"}:
+        raise ValueError("schedule state must be completed or failed")
+    timestamp = finished_at or now()
+    with db.transaction() as connection:
+        schedule = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        if schedule is None:
+            raise ValueError(f"schedule not found: {schedule_id}")
+        if schedule["schedule_kind"] != "interval" or schedule["adapter"] in {
+            "timer",
+            "command-stream",
+        }:
+            raise ValueError(
+                f"schedule {schedule_id} is not a supervised pull-adapter schedule"
+            )
+        run = connection.execute(
+            "SELECT * FROM adapter_runs WHERE id=?", (run_id,)
+        ).fetchone()
+        if (
+            run is None
+            or run["adapter"] != schedule["adapter"]
+            or run["schedule_id"] != schedule_id
+        ):
+            raise ValueError(f"adapter run {run_id} does not belong to schedule {schedule_id}")
+
+        terminal_detail = error or detail
+        _finish_adapter_run(
+            connection,
+            run_id,
+            state=state,
+            completed_at=timestamp,
+            discovered_sources=discovered_sources,
+            emitted_events=emitted_events,
+            deduplicated_events=deduplicated_events,
+            detail=terminal_detail,
+        )
+        if state == "failed":
+            _record_schedule_failure(
+                connection,
+                schedule,
+                failed_at=timestamp,
+                detail=terminal_detail,
+            )
+        else:
+            finished = datetime.fromisoformat(timestamp)
+            next_run = finished + timedelta(seconds=schedule["every_seconds"])
+            connection.execute(
+                "UPDATE adapter_schedules SET last_finished_at=?, last_state='completed', "
+                "last_error=NULL, next_run_at=?, updated_at=? WHERE id=?",
+                (timestamp, next_run.isoformat(), timestamp, schedule_id),
+            )
+            _reset_schedule_retry_state(
+                connection,
+                schedule_id,
+                reset_at=timestamp,
+                reason="scheduled-success",
+            )
+    return {
+        "run": db.row("SELECT * FROM adapter_runs WHERE id=?", (run_id,)),
+        "schedule": get_schedule(db, schedule_id),
+    }
+
+
 def mark_schedule_finished(
     db: Database,
     schedule_id: str,
@@ -1105,6 +1305,142 @@ def mark_schedule_finished(
             (timestamp, state, error, next_run_at, timestamp, schedule_id),
         )
     return get_schedule(db, schedule_id)
+
+
+def execute_due_timer_schedule(
+    db: Database, schedule_id: str, *, triggered_at: str | None = None
+) -> dict[str, Any]:
+    """Emit and advance one interval timer occurrence in a single transaction."""
+
+    db.initialize()
+    trigger = datetime.fromisoformat(triggered_at or now())
+    if trigger.tzinfo is None:
+        raise ValueError("timer trigger time must include a timezone")
+    trigger = trigger.astimezone(UTC)
+    trigger_text = trigger.isoformat()
+    with db.transaction() as connection:
+        row = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"schedule not found: {schedule_id}")
+        if row["schedule_kind"] != "interval" or row["adapter"] != "timer":
+            raise ValueError(f"schedule {schedule_id} is not an interval timer schedule")
+        if not row["enabled"]:
+            raise ValueError(f"schedule {schedule_id} is disabled")
+        scheduled_for = datetime.fromisoformat(row["next_run_at"]).astimezone(UTC)
+        if scheduled_for > trigger:
+            return {
+                "id": schedule_id,
+                "state": "not-due",
+                "schedule": _present_schedule(dict(row)),
+            }
+
+        config = json.loads(row["config_json"])
+        _ensure_timer_source(
+            connection,
+            source_id=config["source_id"],
+            space_id=config["space_id"],
+            created_at=trigger_text,
+        )
+        connection.execute(
+            "INSERT INTO source_health(source_id, state, detail, observed_at) VALUES(?,?,?,?)",
+            (
+                config["source_id"],
+                "ready",
+                "emitted by a Switchboard interval schedule",
+                trigger_text,
+            ),
+        )
+        connection.execute(
+            "UPDATE sources SET state='ready' WHERE id=?", (config["source_id"],)
+        )
+
+        attributes = {
+            "scheduled_for": scheduled_for.isoformat(),
+            **config.get("attributes", {}),
+        }
+        event_result = _emit_event(
+            connection,
+            source_id=config["source_id"],
+            external_id=scheduled_for.isoformat(),
+            event_type=config["event_type"],
+            attributes=attributes,
+            occurred_at=scheduled_for.isoformat(),
+            observed_at=trigger_text,
+        )
+        emitted = int(not event_result["deduplicated"])
+        deduplicated = int(event_result["deduplicated"])
+        detail = f"emitted occurrence {scheduled_for.isoformat()}"
+        run_id = make_id("run")
+        connection.execute(
+            "INSERT INTO adapter_runs(id, adapter, schedule_id, state, started_at, completed_at, "
+            "discovered_sources, emitted_events, deduplicated_events, detail) "
+            "VALUES(?,?,?,'completed',?,?,?,?,?,?)",
+            (
+                run_id,
+                "timer",
+                schedule_id,
+                trigger_text,
+                trigger_text,
+                1,
+                emitted,
+                deduplicated,
+                detail,
+            ),
+        )
+        next_run = scheduled_for + timedelta(seconds=row["every_seconds"])
+        while next_run <= trigger:
+            next_run += timedelta(seconds=row["every_seconds"])
+        late_by = max(0, int((trigger - scheduled_for).total_seconds()))
+        connection.execute(
+            "UPDATE adapter_schedules SET last_started_at=?, last_finished_at=?, "
+            "last_scheduled_for=?, last_triggered_at=?, last_late_by_seconds=?, "
+            "last_state='completed', last_error=NULL, next_run_at=?, updated_at=? WHERE id=?",
+            (
+                trigger_text,
+                trigger_text,
+                scheduled_for.isoformat(),
+                trigger_text,
+                late_by,
+                next_run.isoformat(),
+                trigger_text,
+                schedule_id,
+            ),
+        )
+        _reset_schedule_retry_state(
+            connection,
+            schedule_id,
+            reset_at=trigger_text,
+            reason="scheduled-success",
+        )
+        audit(
+            connection,
+            command="schedule.trigger-timer",
+            entity_type="adapter_schedule",
+            entity_id=schedule_id,
+            payload={
+                "scheduled_for": scheduled_for.isoformat(),
+                "triggered_at": trigger_text,
+                "late_by_seconds": late_by,
+                "next_run_at": next_run.isoformat(),
+            },
+            actor="supervisor",
+        )
+    return {
+        "id": schedule_id,
+        "state": "completed",
+        "run": {
+            "id": run_id,
+            "adapter": "timer",
+            "state": "completed",
+            "emitted_events": emitted,
+            "deduplicated_events": deduplicated,
+            "detail": detail,
+        },
+        "event": event_result,
+        "schedule": get_schedule(db, schedule_id),
+    }
 
 
 def execute_due_calendar_schedule(
@@ -1204,12 +1540,13 @@ def execute_due_calendar_schedule(
             else f"skipped {len(occurrences)} missed occurrences"
         )
         connection.execute(
-            "INSERT INTO adapter_runs(id, adapter, state, started_at, completed_at, "
+            "INSERT INTO adapter_runs(id, adapter, schedule_id, state, started_at, completed_at, "
             "discovered_sources, emitted_events, deduplicated_events, detail) "
-            "VALUES(?,?,'completed',?,?,?,?,?,?)",
+            "VALUES(?,?,?,'completed',?,?,?,?,?,?)",
             (
                 run_id,
                 "timer",
+                schedule_id,
                 trigger_text,
                 trigger_text,
                 1,
@@ -1232,6 +1569,12 @@ def execute_due_calendar_schedule(
                 trigger_text,
                 schedule_id,
             ),
+        )
+        _reset_schedule_retry_state(
+            connection,
+            schedule_id,
+            reset_at=trigger_text,
+            reason="scheduled-success",
         )
         audit(
             connection,
@@ -1270,18 +1613,48 @@ def mark_calendar_schedule_failed(
 ) -> dict[str, Any]:
     timestamp = failed_at or now()
     with db.transaction() as connection:
-        changed = connection.execute(
-            "UPDATE adapter_schedules SET last_started_at=?, last_finished_at=?, "
-            "last_state='failed', last_error=?, updated_at=? "
-            "WHERE id=? AND schedule_kind='calendar'",
-            (timestamp, timestamp, error, timestamp, schedule_id),
-        ).rowcount
-        if not changed:
+        schedule = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=? AND schedule_kind='calendar'",
+            (schedule_id,),
+        ).fetchone()
+        if schedule is None:
             raise ValueError(f"calendar schedule not found: {schedule_id}")
         connection.execute(
-            "INSERT INTO adapter_runs(id, adapter, state, started_at, completed_at, detail) "
-            "VALUES(?,?,'failed',?,?,?)",
-            (make_id("run"), "timer", timestamp, timestamp, error),
+            "INSERT INTO adapter_runs(id, adapter, schedule_id, state, started_at, "
+            "completed_at, detail) VALUES(?,?,?,'failed',?,?,?)",
+            (make_id("run"), "timer", schedule_id, timestamp, timestamp, error),
+        )
+        _record_schedule_failure(
+            connection,
+            schedule,
+            failed_at=timestamp,
+            detail=error,
+        )
+    return get_schedule(db, schedule_id)
+
+
+def mark_timer_schedule_failed(
+    db: Database, schedule_id: str, error: str, *, failed_at: str | None = None
+) -> dict[str, Any]:
+    timestamp = failed_at or now()
+    with db.transaction() as connection:
+        schedule = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=? AND schedule_kind='interval' "
+            "AND adapter='timer'",
+            (schedule_id,),
+        ).fetchone()
+        if schedule is None:
+            raise ValueError(f"timer schedule not found: {schedule_id}")
+        connection.execute(
+            "INSERT INTO adapter_runs(id, adapter, schedule_id, state, started_at, "
+            "completed_at, detail) VALUES(?,?,?,'failed',?,?,?)",
+            (make_id("run"), "timer", schedule_id, timestamp, timestamp, error),
+        )
+        _record_schedule_failure(
+            connection,
+            schedule,
+            failed_at=timestamp,
+            detail=error,
         )
     return get_schedule(db, schedule_id)
 
@@ -1337,11 +1710,35 @@ def recover_interrupted_runs(db: Database) -> int:
     db.initialize()
     timestamp = now()
     with db.transaction() as connection:
-        return connection.execute(
+        recovered = 0
+        scheduled = connection.execute(
+            "SELECT ar.id AS run_id, schedules.* FROM adapter_runs ar "
+            "JOIN adapter_schedules schedules ON schedules.id=ar.schedule_id "
+            "WHERE ar.state='running' AND schedules.adapter!='command-stream'"
+        ).fetchall()
+        for schedule in scheduled:
+            detail = "supervisor restarted before adapter completed"
+            _finish_adapter_run(
+                connection,
+                schedule["run_id"],
+                state="failed",
+                completed_at=timestamp,
+                detail=detail,
+            )
+            _record_schedule_failure(
+                connection,
+                schedule,
+                failed_at=timestamp,
+                detail=detail,
+            )
+            recovered += 1
+        recovered += connection.execute(
             "UPDATE adapter_runs SET state='failed', completed_at=?, "
-            "detail='supervisor restarted before adapter completed' WHERE state='running'",
+            "detail='supervisor restarted before adapter completed' "
+            "WHERE state='running' AND schedule_id IS NULL",
             (timestamp,),
         ).rowcount
+        return recovered
 
 
 def create_wait(
