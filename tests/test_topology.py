@@ -84,6 +84,45 @@ class TopologyTest(unittest.TestCase):
         apply_topology(self.db, changed)
         self.assertEqual(core.list_routes(self.db)[0]["priority"], 20)
 
+    def test_noop_preserves_retry_but_material_schedule_update_resets_it(self) -> None:
+        apply_topology(self.db, self.document)
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE adapter_schedules SET failure_streak=1, "
+                "last_failure_at='2026-10-01T08:00:00+00:00', "
+                "last_failure_detail='offline', "
+                "retry_not_before='2026-10-01T08:00:30+00:00' WHERE id='daily'"
+            )
+            connection.execute(
+                "INSERT INTO schedule_alert_episodes("
+                "id, schedule_id, state, opened_at, updated_at, failure_count, "
+                "last_failure_at, detail) VALUES("
+                "'alert-daily','daily','open','2026-10-01T08:00:00+00:00',"
+                "'2026-10-01T08:00:00+00:00',1,'2026-10-01T08:00:00+00:00','offline')"
+            )
+
+        noop = apply_topology(self.db, self.document)
+        self.assertEqual(noop["changes"], 0)
+        self.assertEqual(core.get_schedule(self.db, "daily")["failure_streak"], 1)
+        self.assertEqual(
+            self.db.row(
+                "SELECT state FROM schedule_alert_episodes WHERE id='alert-daily'"
+            )["state"],
+            "open",
+        )
+
+        changed = json.loads(json.dumps(self.document))
+        changed["schedules"][0]["every_seconds"] = 43200
+        apply_topology(self.db, changed)
+        schedule = core.get_schedule(self.db, "daily")
+        episode = self.db.row(
+            "SELECT * FROM schedule_alert_episodes WHERE id='alert-daily'"
+        )
+        self.assertEqual(schedule["failure_streak"], 0)
+        self.assertIsNone(schedule["retry_not_before"])
+        self.assertEqual(episode["state"], "recovered")
+        self.assertEqual(episode["recovery_reason"], "material-update")
+
     def test_unmanaged_difference_is_a_conflict(self) -> None:
         core.create_space(self.db, "demo", "Other")
         plan = plan_topology(self.db, self.document)

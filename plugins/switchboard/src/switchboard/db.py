@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -260,8 +260,25 @@ CREATE TABLE IF NOT EXISTS adapter_schedules (
     last_late_by_seconds INTEGER,
     last_state TEXT CHECK(last_state IS NULL OR last_state IN ('completed', 'failed')),
     last_error TEXT,
+    failure_streak INTEGER NOT NULL DEFAULT 0 CHECK(failure_streak >= 0),
+    last_failure_at TEXT,
+    last_failure_detail TEXT,
+    retry_not_before TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS schedule_alert_episodes (
+    id TEXT PRIMARY KEY,
+    schedule_id TEXT NOT NULL REFERENCES adapter_schedules(id) ON DELETE CASCADE,
+    state TEXT NOT NULL CHECK(state IN ('open', 'recovered')),
+    opened_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    failure_count INTEGER NOT NULL DEFAULT 1 CHECK(failure_count > 0),
+    last_failure_at TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    recovered_at TEXT,
+    recovery_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS supervisor_state (
@@ -317,7 +334,12 @@ ON processor_alerts(consumer) WHERE state='open' AND consumer IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_delivery_attempts_delivery ON delivery_attempts(delivery_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_source_health_source ON source_health(source_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_adapter_runs_started ON adapter_runs(started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_adapter_schedules_due ON adapter_schedules(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_adapter_schedules_due
+ON adapter_schedules(enabled, next_run_at, retry_not_before);
+CREATE INDEX IF NOT EXISTS idx_schedule_alert_episodes_schedule
+ON schedule_alert_episodes(schedule_id, opened_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_alert_episodes_open
+ON schedule_alert_episodes(schedule_id) WHERE state='open';
 CREATE INDEX IF NOT EXISTS idx_managed_resources_owner
 ON managed_resources(owner, resource_type);
 """ + f"""
@@ -478,6 +500,22 @@ def migrate(connection: sqlite3.Connection) -> None:
             DROP TABLE adapter_schedules_v8;
             """
         )
+    schedule_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(adapter_schedules)").fetchall()
+    }
+    for name, declaration in (
+        ("failure_streak", "INTEGER NOT NULL DEFAULT 0 CHECK(failure_streak >= 0)"),
+        ("last_failure_at", "TEXT"),
+        ("last_failure_detail", "TEXT"),
+        ("retry_not_before", "TEXT"),
+    ):
+        if schedule_columns and name not in schedule_columns:
+            connection.execute(
+                f"ALTER TABLE adapter_schedules ADD COLUMN {name} {declaration}"
+            )
+    # v9's index has the same name but does not cover the persisted retry gate.
+    connection.execute("DROP INDEX IF EXISTS idx_adapter_schedules_due")
     connection.executescript(SCHEMA)
     _backfill_review_groups(connection)
     connection.commit()

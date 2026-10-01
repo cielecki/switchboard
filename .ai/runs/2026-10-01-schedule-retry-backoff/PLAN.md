@@ -15,7 +15,7 @@
 
 | Phase | Step | Title | Status | Commit |
 |-------|------|-------|--------|--------|
-| 1 | 1.1 | Persist schedule retry state and deterministic due selection | todo | — |
+| 1 | 1.1 | Persist schedule retry state and deterministic due selection | done | 5471027 |
 | 1 | 1.2 | Make scheduled attempt finalization and alert episodes atomic | todo | — |
 | 2 | 2.1 | Expose consistent retry state in CLI, doctor, web, and topology behavior | todo | — |
 | 2 | 2.2 | Prove retry, restart, recovery, and occurrence-once invariants | todo | — |

@@ -53,6 +53,68 @@ class MigrationTest(unittest.TestCase):
             self.assertEqual(row["every_seconds"], 86400)
             self.assertEqual(row["revision"], 1)
             self.assertIn("last_scheduled_for", row)
+            self.assertEqual(row["failure_streak"], 0)
+            self.assertIsNone(row["retry_not_before"])
+
+    def test_v9_schedule_retry_migration_preserves_logical_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "switchboard.sqlite3"
+            timestamp = "2026-10-01T08:00:00+00:00"
+            with sqlite3.connect(path) as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    INSERT INTO schema_meta VALUES('schema_version', '9');
+                    CREATE TABLE adapter_schedules (
+                        id TEXT PRIMARY KEY,
+                        adapter TEXT NOT NULL,
+                        config_json TEXT NOT NULL,
+                        schedule_kind TEXT NOT NULL DEFAULT 'interval',
+                        every_seconds INTEGER,
+                        revision INTEGER NOT NULL DEFAULT 1,
+                        enabled INTEGER NOT NULL DEFAULT 1,
+                        next_run_at TEXT NOT NULL,
+                        last_started_at TEXT,
+                        last_finished_at TEXT,
+                        last_scheduled_for TEXT,
+                        last_triggered_at TEXT,
+                        last_late_by_seconds INTEGER,
+                        last_state TEXT,
+                        last_error TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    CREATE INDEX idx_adapter_schedules_due
+                    ON adapter_schedules(enabled, next_run_at);
+                    """
+                )
+                connection.execute(
+                    "INSERT INTO adapter_schedules("
+                    "id, adapter, config_json, every_seconds, next_run_at, "
+                    "created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
+                    ("daily", "timer", "{}", 86400, timestamp, timestamp, timestamp),
+                )
+
+            Database(path).initialize()
+
+            db = Database(path)
+            row = db.row("SELECT * FROM adapter_schedules WHERE id='daily'")
+            index_sql = db.row(
+                "SELECT sql FROM sqlite_master WHERE type='index' "
+                "AND name='idx_adapter_schedules_due'"
+            )["sql"]
+            self.assertEqual(row["next_run_at"], timestamp)
+            self.assertEqual(row["failure_streak"], 0)
+            self.assertIsNone(row["last_failure_at"])
+            self.assertIsNone(row["last_failure_detail"])
+            self.assertIsNone(row["retry_not_before"])
+            self.assertIn("retry_not_before", index_sql)
+            self.assertIsNotNone(
+                db.row(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name='schedule_alert_episodes'"
+                )
+            )
 
     def test_v7_review_backfill_groups_shared_decision_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

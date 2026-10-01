@@ -22,6 +22,8 @@ from .calendar_schedule import (
 )
 from .db import SCHEMA_VERSION, Database, decode_json_fields
 
+SCHEDULE_RETRY_DELAYS_SECONDS = (30, 60, 120, 240, 480, 900)
+
 
 def now() -> str:
     return datetime.now(UTC).isoformat()
@@ -242,6 +244,52 @@ def list_adapter_runs(db: Database, limit: int = 50) -> list[dict[str, Any]]:
     return db.rows("SELECT * FROM adapter_runs ORDER BY started_at DESC LIMIT ?", (limit,))
 
 
+def schedule_retry_delay_seconds(failure_streak: int) -> int:
+    """Return the fixed retry delay for a one-based consecutive failure count."""
+
+    if failure_streak < 1:
+        raise ValueError("schedule failure streak must be at least one")
+    index = min(failure_streak, len(SCHEDULE_RETRY_DELAYS_SECONDS)) - 1
+    return SCHEDULE_RETRY_DELAYS_SECONDS[index]
+
+
+def _schedule_materially_changed(
+    existing: sqlite3.Row | None,
+    *,
+    adapter: str,
+    config_json: str,
+    schedule_kind: str,
+    every_seconds: int | None,
+) -> bool:
+    return existing is not None and (
+        existing["adapter"] != adapter
+        or existing["config_json"] != config_json
+        or existing["schedule_kind"] != schedule_kind
+        or existing["every_seconds"] != every_seconds
+    )
+
+
+def _reset_schedule_retry_state(
+    connection: sqlite3.Connection,
+    schedule_id: str,
+    *,
+    reset_at: str,
+    reason: str,
+) -> None:
+    """Clear runtime retry state and recover any open local alert episode."""
+
+    connection.execute(
+        "UPDATE adapter_schedules SET failure_streak=0, last_failure_at=NULL, "
+        "last_failure_detail=NULL, retry_not_before=NULL WHERE id=?",
+        (schedule_id,),
+    )
+    connection.execute(
+        "UPDATE schedule_alert_episodes SET state='recovered', updated_at=?, "
+        "recovered_at=?, recovery_reason=? WHERE schedule_id=? AND state='open'",
+        (reset_at, reset_at, reason, schedule_id),
+    )
+
+
 def upsert_ingest_schedule(
     db: Database,
     schedule_id: str,
@@ -275,7 +323,24 @@ def upsert_ingest_schedule(
         "space_id": space_id,
         "timeout": timeout,
     }
+    encoded = json.dumps(config, sort_keys=True)
     with db.transaction() as connection:
+        existing = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        material_change = _schedule_materially_changed(
+            existing,
+            adapter="ingest-shadow",
+            config_json=encoded,
+            schedule_kind="interval",
+            every_seconds=every_seconds,
+        )
+        enabling = existing is not None and not bool(existing["enabled"]) and enabled
+        next_run_at = (
+            timestamp
+            if existing is None or material_change or enabling
+            else existing["next_run_at"]
+        )
         connection.execute(
             "INSERT INTO adapter_schedules(id, adapter, config_json, every_seconds, enabled, "
             "next_run_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?) "
@@ -287,14 +352,21 @@ def upsert_ingest_schedule(
             (
                 schedule_id,
                 "ingest-shadow",
-                json.dumps(config, sort_keys=True),
+                encoded,
                 every_seconds,
                 int(enabled),
-                timestamp,
+                next_run_at,
                 timestamp,
                 timestamp,
             ),
         )
+        if material_change or enabling:
+            _reset_schedule_retry_state(
+                connection,
+                schedule_id,
+                reset_at=timestamp,
+                reason="material-update" if material_change else "re-enabled",
+            )
         audit(
             connection,
             command="schedule.upsert",
@@ -364,7 +436,24 @@ def upsert_inbound_schedule(
         "slack_discovery_script": str(slack_discovery) if slack_discovery else None,
         "source_mode": source_mode,
     }
+    encoded = json.dumps(config, sort_keys=True)
     with db.transaction() as connection:
+        existing = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        material_change = _schedule_materially_changed(
+            existing,
+            adapter="inbound-leads",
+            config_json=encoded,
+            schedule_kind="interval",
+            every_seconds=every_seconds,
+        )
+        enabling = existing is not None and not bool(existing["enabled"]) and enabled
+        next_run_at = (
+            timestamp
+            if existing is None or material_change or enabling
+            else existing["next_run_at"]
+        )
         connection.execute(
             "INSERT INTO adapter_schedules(id, adapter, config_json, every_seconds, enabled, "
             "next_run_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?) "
@@ -376,14 +465,21 @@ def upsert_inbound_schedule(
             (
                 schedule_id,
                 "inbound-leads",
-                json.dumps(config, sort_keys=True),
+                encoded,
                 every_seconds,
                 int(enabled),
-                timestamp,
+                next_run_at,
                 timestamp,
                 timestamp,
             ),
         )
+        if material_change or enabling:
+            _reset_schedule_retry_state(
+                connection,
+                schedule_id,
+                reset_at=timestamp,
+                reason="material-update" if material_change else "re-enabled",
+            )
         audit(
             connection,
             command="schedule.upsert",
@@ -438,7 +534,24 @@ def upsert_stream_schedule(
     db.initialize()
     timestamp = now()
     config = {"command": normalized_command, "environment": environment}
+    encoded = json.dumps(config, sort_keys=True)
     with db.transaction() as connection:
+        existing = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        material_change = _schedule_materially_changed(
+            existing,
+            adapter="command-stream",
+            config_json=encoded,
+            schedule_kind="interval",
+            every_seconds=every_seconds,
+        )
+        enabling = existing is not None and not bool(existing["enabled"]) and enabled
+        next_run_at = (
+            timestamp
+            if existing is None or material_change or enabling
+            else existing["next_run_at"]
+        )
         connection.execute(
             "INSERT INTO adapter_schedules(id, adapter, config_json, every_seconds, enabled, "
             "next_run_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?) "
@@ -449,14 +562,21 @@ def upsert_stream_schedule(
             (
                 schedule_id,
                 "command-stream",
-                json.dumps(config, sort_keys=True),
+                encoded,
                 every_seconds,
                 int(enabled),
-                timestamp,
+                next_run_at,
                 timestamp,
                 timestamp,
             ),
         )
+        if material_change or enabling:
+            _reset_schedule_retry_state(
+                connection,
+                schedule_id,
+                reset_at=timestamp,
+                reason="material-update" if material_change else "re-enabled",
+            )
         audit(
             connection,
             command="schedule.upsert",
@@ -501,6 +621,7 @@ def upsert_timer_schedule(
         "event_type": event_type,
         "attributes": attributes or {},
     }
+    encoded = json.dumps(config, sort_keys=True)
     db.initialize()
     with db.transaction() as connection:
         _ensure_timer_source(
@@ -508,6 +629,22 @@ def upsert_timer_schedule(
             source_id=source_id,
             space_id=space_id,
             created_at=timestamp,
+        )
+        existing = connection.execute(
+            "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
+        ).fetchone()
+        material_change = _schedule_materially_changed(
+            existing,
+            adapter="timer",
+            config_json=encoded,
+            schedule_kind="interval",
+            every_seconds=every_seconds,
+        )
+        enabling = existing is not None and not bool(existing["enabled"]) and enabled
+        desired_next_run_at = (
+            next_run_at
+            if existing is None or material_change or enabling
+            else existing["next_run_at"]
         )
         connection.execute(
             "INSERT INTO adapter_schedules(id, adapter, config_json, schedule_kind, "
@@ -521,14 +658,21 @@ def upsert_timer_schedule(
             (
                 schedule_id,
                 "timer",
-                json.dumps(config, sort_keys=True),
+                encoded,
                 every_seconds,
                 int(enabled),
-                next_run_at,
+                desired_next_run_at,
                 timestamp,
                 timestamp,
             ),
         )
+        if material_change or enabling:
+            _reset_schedule_retry_state(
+                connection,
+                schedule_id,
+                reset_at=timestamp,
+                reason="material-update" if material_change else "re-enabled",
+            )
         audit(
             connection,
             command="schedule.upsert",
@@ -623,10 +767,12 @@ def upsert_calendar_schedule(
                 ),
             )
         else:
-            material_change = (
-                existing["adapter"] != "timer"
-                or existing["schedule_kind"] != "calendar"
-                or existing["config_json"] != encoded
+            material_change = _schedule_materially_changed(
+                existing,
+                adapter="timer",
+                config_json=encoded,
+                schedule_kind="calendar",
+                every_seconds=None,
             )
             enabling = not bool(existing["enabled"]) and enabled
             revision = existing["revision"] + int(material_change or enabling)
@@ -642,6 +788,13 @@ def upsert_calendar_schedule(
                 "next_run_at=?, updated_at=? WHERE id=?",
                 (encoded, revision, int(enabled), next_run_at, timestamp, schedule_id),
             )
+            if material_change or enabling:
+                _reset_schedule_retry_state(
+                    connection,
+                    schedule_id,
+                    reset_at=timestamp,
+                    reason="material-update" if material_change else "re-enabled",
+                )
         audit(
             connection,
             command="schedule.upsert-calendar",
@@ -822,20 +975,29 @@ def set_schedule_enabled(db: Database, schedule_id: str, enabled: bool) -> dict[
         if schedule is None:
             raise ValueError(f"schedule not found: {schedule_id}")
         revision = schedule["revision"]
-        next_run_at = timestamp
-        if schedule["schedule_kind"] == "calendar":
-            next_run_at = schedule["next_run_at"]
-            if enabled and not bool(schedule["enabled"]):
+        next_run_at = schedule["next_run_at"]
+        enabling = enabled and not bool(schedule["enabled"])
+        if enabling:
+            if schedule["schedule_kind"] == "calendar":
                 config = json.loads(schedule["config_json"])
                 next_run_at = next_occurrence(
                     config["calendar"], datetime.fromisoformat(timestamp)
                 ).isoformat()
                 revision += 1
+            else:
+                next_run_at = timestamp
         connection.execute(
             "UPDATE adapter_schedules SET enabled=?, revision=?, next_run_at=?, updated_at=? "
             "WHERE id=?",
             (int(enabled), revision, next_run_at, timestamp, schedule_id),
         )
+        if enabling:
+            _reset_schedule_retry_state(
+                connection,
+                schedule_id,
+                reset_at=timestamp,
+                reason="re-enabled",
+            )
         audit(
             connection,
             command="schedule.enable" if enabled else "schedule.disable",
@@ -869,8 +1031,10 @@ def due_schedules(db: Database, at: str | None = None) -> list[dict[str, Any]]:
         _present_schedule(row)
         for row in db.rows(
             "SELECT * FROM adapter_schedules WHERE enabled=1 AND next_run_at<=? "
+            "AND (adapter='command-stream' OR retry_not_before IS NULL "
+            "OR retry_not_before<=?) "
             "ORDER BY next_run_at, id",
-            (timestamp,),
+            (timestamp, timestamp),
         )
     ]
     return schedules
