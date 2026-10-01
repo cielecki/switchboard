@@ -21,7 +21,7 @@
 | 2 | 2.2 | Prove retry, restart, recovery, and occurrence-once invariants | done | f699d15 |
 | 2 | 2.3 | Preserve interval occurrence identity across the 0.11.5 upgrade boundary | done | f0fa967 |
 | 2 | 2.4 | Restore dashboard table readability across responsive viewports | done | f7154da |
-| 2 | 2.5 | Polish operator-facing nulls, contrast, and routing copy | done | aa96753 |
+| 2 | 2.5 | Polish operator-facing nulls, contrast, and routing copy | done | 88266e7 |
 | 3 | 3.1 | Document bounded retry and prepare release 0.11.6 | done | bcb2380 |
 
 ## Goal

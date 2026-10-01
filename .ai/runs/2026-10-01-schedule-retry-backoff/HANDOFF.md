@@ -3,24 +3,24 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T10:03:53Z
+- **Last updated:** 2026-10-01T10:08:48Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** 2.5 final presentation review repair
-- **Last commit:** `f7154da` (`fix: restore responsive dashboard tables`)
+- **Current phase / step:** all implementation complete / final gate and review
+- **Last commit:** `88266e7` (`fix: polish dashboard presentation`)
 
 ## What just happened
 
-The repeated code review passed the implementation but found one inaccurate README sentence about
-when a binding is required. Fresh visual QA proved all table containment and wrapping repairs, then
-found two remaining presentation defects: a completed-run detail renders `error: null`, and muted
-placeholder text measures 4.4477:1 instead of the 4.5:1 normal-text threshold. Step 2.5 owns only
-these final review findings. No release, installation, or live verification has occurred.
+Step 2.5 resolved the last review findings: completed-run presentation omits absent errors while the
+API preserves null, muted text now measures 4.5707:1, and README correctly separates route-created
+runs from binding-created deliveries. All implementation and review-repair rows are complete. The
+checkpoint had no configured commands and was recorded as skipped. No release, installation, or
+live verification has occurred.
 
 ## Next concrete action
 
-Dispatch one executor for step 2.5, then rerun the full gate, independent complete-diff review, and
-a new fresh-context visual QA pass on the final revision. Release only if all three pass.
+Run the full gate, independent complete-diff review, and a new fresh-context visual QA pass on the
+final revision. Release only if all three pass.
 
 ## Blockers / open questions
 

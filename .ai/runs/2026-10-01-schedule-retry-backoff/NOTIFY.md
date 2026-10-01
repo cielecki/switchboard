@@ -70,3 +70,10 @@ validators. Independent code review passed except for one low-severity README ac
 Fresh visual QA confirmed the responsive table repair but found raw `error: null` in a completed-run
 detail and muted text contrast of 4.4477:1 against a 4.5:1 threshold. Step 2.5 will address only
 these findings. Release remains blocked until gate, review, and fresh visual QA all pass.
+
+## 2026-10-01T10:08:48Z — final presentation repair complete
+
+Step 2.5 resolved the remaining run-detail null, contrast, and README accuracy findings. The suite
+now has 147 passing tests; both plugin validators and embedded JavaScript syntax checks pass. The
+checkpoint had no configured commands and was recorded as an explicit skip. All plan rows are done;
+release remains blocked until the repeated final gate, independent review, and fresh visual QA pass.
