@@ -3,25 +3,26 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T05:19:55Z
+- **Last updated:** 2026-10-01T05:28:54Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** Phase 2 / 2.1
-- **Last commit:** `c68d651` (`feat: repair legacy calendar schedule sources`)
+- **Current phase / step:** Phase 3 / 3.1
+- **Last commit:** `6de32b6` (`test: prove calendar occurrence durability`)
 
 ## What just happened
 
-Phase 1 is complete. Schedule upserts now provision or validate canonical `timer` sources in the
-same transaction, and doctor reports incompatible deployed sources. The bounded
-`schedule repair-calendar-source` command validates the legacy shape and every shared consumer,
-preserves unrelated state and history, writes audit evidence, and is idempotent. The checkpoint
-verification had no configured commands and was recorded as skipped.
+Phase 2 is complete. Declarative topology now rejects wrong-space or non-`timer` sources before
+mutation and valid calendar topology remains idempotent and exportable through the shared core
+path. Regression coverage proves one durable event, processor run, and delivery for normal due and
+latest-only `catch-up-once` occurrences across database reopen and supervisor-style restart. No
+production defect was exposed. The checkpoint had no configured commands and was recorded as
+skipped.
 
 ## Next concrete action
 
-Dispatch one executor for step 2.1 only: enforce the same source contract during declarative
-topology validation and application, add atomic rejection/idempotent export coverage, run the
-configured per-step checks, commit once, update the PLAN row, and push `main`.
+Dispatch one executor for step 3.1 only: document the operator contract and repair workflow, align
+all public version metadata at 0.11.5, run the configured per-step checks, commit once, update the
+PLAN row, and push `main`.
 
 ## Blockers / open questions
 

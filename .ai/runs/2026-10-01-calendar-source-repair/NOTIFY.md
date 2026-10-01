@@ -22,3 +22,11 @@ Steps 1.1 and 1.2 are complete and pushed to `main`. The shared timer-source con
 diagnostic, and strict audited legacy repair command passed 115 unit tests and both plugin
 validators. The configured checkpoint verification contained no commands, so it completed as an
 explicit skip. No live state has been repaired yet; the deployed runtime remains 0.11.4.
+
+## 2026-10-01T05:28:54Z — phase 2 checkpoint
+
+Steps 2.1 and 2.2 are complete and pushed to `main`. Topology now enforces the same timer-source
+contract before mutation, and normal-due plus catch-up regression tests prove one logical
+event/run/delivery across reopen and supervisor-style restart. The full suite has 119 passing
+tests; both plugin validators pass. The checkpoint had no configured commands and was recorded as
+an explicit skip. No live state has been repaired yet.
