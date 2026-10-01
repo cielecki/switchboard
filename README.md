@@ -287,9 +287,9 @@ policy and cannot be tuned per schedule.
 
 Schedule retry does not change processor-delivery retries, accepted-wake rearming, command-stream
 restart cadence, or downstream side-effect guarantees. For each timer occurrence, the durable
-exactly-once boundary still covers one logical event, one processor run, and one delivery.
-The run and delivery exist only when an enabled route matches and its processor has an enabled
-binding. Destination workflows must still make external writes idempotent.
+exactly-once boundary still covers the logical event and, when applicable, its routed work. A
+matching enabled route creates one processor run; an enabled binding for that processor additionally
+creates one delivery. Destination workflows must still make external writes idempotent.
 
 Timer and calendar schedules require a source of kind `timer` in the schedule's space. When a
 schedule is created, Switchboard provisions the source if it is missing. If the source belongs to

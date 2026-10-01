@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import threading
 import unittest
@@ -11,7 +12,24 @@ from pathlib import Path
 
 from switchboard import core
 from switchboard.db import Database
-from switchboard.web import handler_for
+from switchboard.web import HTML, handler_for
+
+
+def contrast_ratio(foreground: str, background: str) -> float:
+    def luminance(color: str) -> float:
+        channels = [int(color[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [
+            channel / 12.92
+            if channel <= 0.04045
+            else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        ]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    lighter, darker = sorted(
+        (luminance(foreground), luminance(background)), reverse=True
+    )
+    return (lighter + 0.05) / (darker + 0.05)
 
 
 class WebTest(unittest.TestCase):
@@ -79,6 +97,8 @@ class WebTest(unittest.TestCase):
         )
         self.assertIn("if(value===null||value===undefined||value==='')", html)
         self.assertIn('<span class="placeholder">—</span>', html)
+        self.assertIn("...(r.error==null?{}:{error:r.error})", html)
+        self.assertIn("JSON.stringify(runOutcome(r),null,2)", html)
         self.assertNotIn("fetch(url,{method:'POST'", html)
 
         with urllib.request.urlopen(f"{self.base_url}/api/spaces") as response:
@@ -137,6 +157,53 @@ class WebTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as raised:
             urllib.request.urlopen(request)
         self.assertEqual(raised.exception.code, 405)
+
+    def test_muted_and_placeholder_text_meet_normal_text_contrast(self) -> None:
+        surface = re.search(
+            r"\.metric,\.card,section,details \{[^}]*background:(#[0-9a-f]{6});", HTML
+        )
+        self.assertIsNotNone(surface)
+        assert surface is not None
+        for selector in ("muted", "placeholder", "empty"):
+            match = re.search(rf"\.{selector} \{{ color:(#[0-9a-f]{{6}});", HTML)
+            self.assertIsNotNone(match, selector)
+            assert match is not None
+            self.assertGreaterEqual(
+                contrast_ratio(match.group(1), surface.group(1)),
+                4.5,
+                selector,
+            )
+
+    def test_completed_run_api_keeps_null_error_for_presentation_to_omit(self) -> None:
+        core.create_route(
+            self.db,
+            space_id="test-space",
+            name="daily processor",
+            priority=10,
+            predicate={"event_type": "daily.ready"},
+            processor="daily-worker",
+        )
+        emitted = core.emit_event(
+            self.db,
+            source_id="test-source",
+            external_id="daily-ready-1",
+            event_type="daily.ready",
+            attributes={},
+        )
+        run = core.start_processor_run(self.db, emitted["processor_runs"][0])
+        core.finish_processor_run(
+            self.db,
+            run["id"],
+            state="completed",
+            summary="Daily work completed.",
+        )
+
+        with urllib.request.urlopen(f"{self.base_url}/api/processors/{run['id']}") as response:
+            presented = json.load(response)
+
+        self.assertEqual(presented["state"], "completed")
+        self.assertIn("error", presented)
+        self.assertIsNone(presented["error"])
 
 
 if __name__ == "__main__":

@@ -39,10 +39,10 @@ HTML = """<!doctype html>
     .col-token code,.col-state code,.col-time code { white-space:nowrap; overflow-wrap:normal; word-break:normal; }
     .col-detail { min-width:16rem; max-width:30rem; }
     .col-detail code { display:block; white-space:normal; overflow-wrap:anywhere; word-break:break-word; }
-    .placeholder { color:#71809e; font-family:inherit; }
+    .placeholder { color:#7382a0; font-family:inherit; }
     details { margin-top:14px; padding:12px 15px; overflow:auto; } summary { cursor:pointer; font-weight:650; }
     pre { white-space:pre-wrap; overflow-wrap:anywhere; color:#c1d0ff; }
-    .empty { color:#71809e; margin:8px 0; } .good { color:#7ee2ad; }
+    .empty { color:#7382a0; margin:8px 0; } .good { color:#7ee2ad; }
     #run-detail:empty { display:none; }
   </style>
 </head>
@@ -71,6 +71,7 @@ const detailColumns=new Set(['detail','health_detail','last_error','predicate','
 function columnClass(column){if(column==='id'||column.endsWith('_id')||tokenColumns.has(column))return 'col-token';if(stateColumns.has(column))return 'col-state';if(column.endsWith('_at')||column==='next_run_local')return 'col-time';if(detailColumns.has(column))return 'col-detail';return ''}
 function renderCell(value){if(value===null||value===undefined||value==='')return '<span class="placeholder">—</span>';return `<code>${esc(typeof value==='object'?JSON.stringify(value):value)}</code>`}
 function table(rows,cols){if(!rows.length)return '<p class="empty">None</p>';return '<div class="table-scroll" role="region" tabindex="0"><table><thead><tr>'+cols.map(c=>`<th class="${columnClass(c)}">${esc(c)}</th>`).join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(c=>`<td class="${columnClass(c)}">${renderCell(r[c])}</td>`).join('')+'</tr>').join('')+'</tbody></table></div>'}
+function runOutcome(r){return {facts:r.facts,decision:r.decision,actions:r.actions,...(r.error==null?{}:{error:r.error})}}
 function runCard(r){return `<div class="card ${r.state==='failed'?'danger':''}"><div class="row"><span class="badge">${esc(r.processor)} · ${esc(r.state)}</span><span class="tiny muted">${fmt(r.updated_at)}</span></div><div class="summary">${esc(r.summary||r.id)}</div><a href="?${selected?'space='+encodeURIComponent(selected)+'&':''}run=${encodeURIComponent(r.id)}">Lifecycle</a></div>`}
 function reviewCard(r){return `<div class="card warning"><div class="row"><span class="badge">${esc(r.space_id)} · ${r.open_run_count} item${r.open_run_count===1?'':'s'}</span><span class="tiny muted">${fmt(r.updated_at)}</span></div><div class="summary"><strong>${esc(r.title)}</strong><br>${esc(r.summary)}</div>${link(r.url,r.url?'Open decision chat':'No linked chat')}<div class="tiny muted">Resolve via CLI · <code>${esc(r.id)}</code></div></div>`}
 function scheduleRetryCard(s){const r=s.retry||{},e=r.episode||{},f=r.last_failure||{};return `<div class="card ${r.state==='inconsistent'?'danger':'warning'}"><div class="row"><strong>Schedule retry · ${esc(s.id)}</strong><span class="badge">${esc(r.state)}</span></div><div class="summary">Failure streak ${esc(r.failure_streak)} · next retry ${esc(fmt(r.next_retry_at)||'not recorded')}<br>${esc(f.detail||'No failure detail')}</div><div class="tiny muted">Episode <code>${esc(e.id||'missing')}</code> · ${esc(e.state||'missing')}</div></div>`}
@@ -97,7 +98,7 @@ async function load(){
   document.querySelector('#schedules').innerHTML=table(scheduleRows,['id','schedule_kind','enabled','calendar_rule','every_seconds','next_run_local','next_run_at','retry_state','failure_streak','last_failure_at','next_retry_at','episode_state','last_state','last_error']);
   document.querySelector('#routes').innerHTML=table(scoped(routes),['priority','state','name','space_id','predicate','target']);
   document.querySelector('#events').innerHTML=table(scoped(events),['id','space_id','source_id','event_type','external_id','observed_at']);
-  if(selectedRun){const r=await get('/api/processors/'+encodeURIComponent(selectedRun));const lifecycle=[{stage:'event observed',at:r.event?.observed_at,detail:r.event?.event_type},{stage:'run queued',at:r.created_at,detail:r.id},...(r.delivery?[{stage:'wake created',at:r.delivery.created_at,detail:r.delivery.state},{stage:'wake accepted',at:r.delivery.accepted_at,detail:r.delivery.consumer},{stage:'wake acknowledged',at:r.delivery.acknowledged_at,detail:''}]:[]),...r.attempts.map(a=>({stage:'worker '+a.state,at:a.started_at,detail:a.worker+' · '+(a.detail||'')})),{stage:r.state,at:r.completed_at||r.updated_at,detail:r.summary}].filter(x=>x.at);document.querySelector('#run-detail').innerHTML=`<h2>Run lifecycle</h2>${table(lifecycle,['stage','at','detail'])}<pre>${esc(JSON.stringify({facts:r.facts,decision:r.decision,actions:r.actions,error:r.error},null,2))}</pre>`}
+  if(selectedRun){const r=await get('/api/processors/'+encodeURIComponent(selectedRun));const lifecycle=[{stage:'event observed',at:r.event?.observed_at,detail:r.event?.event_type},{stage:'run queued',at:r.created_at,detail:r.id},...(r.delivery?[{stage:'wake created',at:r.delivery.created_at,detail:r.delivery.state},{stage:'wake accepted',at:r.delivery.accepted_at,detail:r.delivery.consumer},{stage:'wake acknowledged',at:r.delivery.acknowledged_at,detail:''}]:[]),...r.attempts.map(a=>({stage:'worker '+a.state,at:a.started_at,detail:a.worker+' · '+(a.detail||'')})),{stage:r.state,at:r.completed_at||r.updated_at,detail:r.summary}].filter(x=>x.at);document.querySelector('#run-detail').innerHTML=`<h2>Run lifecycle</h2>${table(lifecycle,['stage','at','detail'])}<pre>${esc(JSON.stringify(runOutcome(r),null,2))}</pre>`}
 }
 load().catch(e=>document.querySelector('#trouble').innerHTML=`<div class="card danger">${esc(e.message)}</div>`);setInterval(load,5000);
 </script></body></html>"""
