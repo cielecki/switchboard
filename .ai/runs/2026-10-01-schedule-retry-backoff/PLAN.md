@@ -18,7 +18,7 @@
 | 1 | 1.1 | Persist schedule retry state and deterministic due selection | done | 2dbaede |
 | 1 | 1.2 | Make scheduled attempt finalization and alert episodes atomic | done | a630266 |
 | 2 | 2.1 | Expose consistent retry state in CLI, doctor, web, and topology behavior | done | 2040609 |
-| 2 | 2.2 | Prove retry, restart, recovery, and occurrence-once invariants | todo | — |
+| 2 | 2.2 | Prove retry, restart, recovery, and occurrence-once invariants | done | fd493fc |
 | 3 | 3.1 | Document bounded retry and prepare release 0.11.6 | todo | — |
 
 ## Goal

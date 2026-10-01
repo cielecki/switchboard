@@ -1430,14 +1430,23 @@ def execute_due_timer_schedule(
             "UPDATE sources SET state='ready' WHERE id=?", (config["source_id"],)
         )
 
-        attributes = {
-            "scheduled_for": scheduled_for.isoformat(),
-            **config.get("attributes", {}),
-        }
+        late_by = max(0, int((trigger - scheduled_for).total_seconds()))
+        attributes = dict(config.get("attributes") or {})
+        attributes.update(
+            {
+                "schedule_id": schedule_id,
+                "schedule_revision": row["revision"],
+                "scheduled_for": scheduled_for.isoformat(),
+                "triggered_at": trigger_text,
+                "late_by_seconds": late_by,
+            }
+        )
         event_result = _emit_event(
             connection,
             source_id=config["source_id"],
-            external_id=scheduled_for.isoformat(),
+            external_id=(
+                f"schedule:{schedule_id}:r{row['revision']}:{scheduled_for.isoformat()}"
+            ),
             event_type=config["event_type"],
             attributes=attributes,
             occurred_at=scheduled_for.isoformat(),
@@ -1466,7 +1475,6 @@ def execute_due_timer_schedule(
         next_run = scheduled_for + timedelta(seconds=row["every_seconds"])
         while next_run <= trigger:
             next_run += timedelta(seconds=row["every_seconds"])
-        late_by = max(0, int((trigger - scheduled_for).total_seconds()))
         connection.execute(
             "UPDATE adapter_schedules SET last_started_at=?, last_finished_at=?, "
             "last_scheduled_for=?, last_triggered_at=?, last_late_by_seconds=?, "
