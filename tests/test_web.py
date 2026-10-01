@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -13,6 +14,22 @@ from pathlib import Path
 from switchboard import core
 from switchboard.db import Database
 from switchboard.web import HTML, handler_for
+
+
+def run_presentation_javascript(expression: str) -> object:
+    helpers = HTML.split("<script>", 1)[1].split("async function get", 1)[0]
+    script = (
+        "const location={search:''};\n"
+        f"{helpers}\n"
+        f"console.log(JSON.stringify({expression}));\n"
+    )
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
 
 
 def contrast_ratio(foreground: str, background: str) -> float:
@@ -97,7 +114,8 @@ class WebTest(unittest.TestCase):
         )
         self.assertIn("if(value===null||value===undefined||value==='')", html)
         self.assertIn('<span class="placeholder">—</span>', html)
-        self.assertIn("...(r.error==null?{}:{error:r.error})", html)
+        self.assertIn("function presentationValue(value)", html)
+        self.assertIn("detail:r.delivery.id", html)
         self.assertIn("JSON.stringify(runOutcome(r),null,2)", html)
         self.assertNotIn("fetch(url,{method:'POST'", html)
 
@@ -196,6 +214,7 @@ class WebTest(unittest.TestCase):
             run["id"],
             state="completed",
             summary="Daily work completed.",
+            facts={"sender": {"address": None, "verified": True}},
         )
 
         with urllib.request.urlopen(f"{self.base_url}/api/processors/{run['id']}") as response:
@@ -204,6 +223,51 @@ class WebTest(unittest.TestCase):
         self.assertEqual(presented["state"], "completed")
         self.assertIn("error", presented)
         self.assertIsNone(presented["error"])
+        self.assertIsNone(presented["facts"]["sender"]["address"])
+
+    def test_run_detail_recursively_omits_nested_null_values(self) -> None:
+        presented = run_presentation_javascript(
+            "runOutcome({"
+            "facts:{sender:{address:null,verified:true},"
+            "matches:[null,{id:'deal-1',reason:null}]},"
+            "decision:null,actions:[{kind:'archive',detail:null},null],error:null"
+            "})"
+        )
+
+        self.assertEqual(
+            presented,
+            {
+                "facts": {
+                    "sender": {"verified": True},
+                    "matches": [{"id": "deal-1"}],
+                },
+                "actions": [{"kind": "archive"}],
+            },
+        )
+
+    def test_run_lifecycle_keeps_creation_history_after_acknowledgement(self) -> None:
+        lifecycle = run_presentation_javascript(
+            "runLifecycle({"
+            "id:'prun-1',created_at:'2026-10-01T08:00:00+00:00',"
+            "state:'completed',completed_at:'2026-10-01T08:03:00+00:00',"
+            "summary:'Handled',event:null,attempts:[],"
+            "delivery:{id:'pdelivery-1',state:'acknowledged',consumer:'chat:worker',"
+            "created_at:'2026-10-01T08:00:01+00:00',"
+            "accepted_at:'2026-10-01T08:00:02+00:00',"
+            "acknowledged_at:'2026-10-01T08:03:00+00:00'}"
+            "})"
+        )
+
+        by_stage = {row["stage"]: row for row in lifecycle}
+        self.assertEqual(by_stage["wake created"]["detail"], "pdelivery-1")
+        self.assertNotEqual(by_stage["wake created"]["detail"], "acknowledged")
+        self.assertEqual(by_stage["wake accepted"]["detail"], "chat:worker")
+        self.assertEqual(
+            by_stage["wake accepted"]["at"], "2026-10-01T08:00:02+00:00"
+        )
+        self.assertEqual(
+            by_stage["wake acknowledged"]["at"], "2026-10-01T08:03:00+00:00"
+        )
 
 
 if __name__ == "__main__":
