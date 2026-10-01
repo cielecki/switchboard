@@ -3,24 +3,24 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T10:24:38Z
+- **Last updated:** 2026-10-01T10:28:51Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** 2.6 final lifecycle presentation repair
-- **Last commit:** `88266e7` (`fix: polish dashboard presentation`)
+- **Current phase / step:** all implementation complete / final gate and visual QA
+- **Last commit:** `8d18122` (`fix: preserve lifecycle presentation history`)
 
 ## What just happened
 
-The final gate and independent code review pass at 147 tests, but fresh visual QA found two
-remaining lifecycle presentation defects. A nested nullable fact still renders as raw `null`, and
-the `wake created` row shows the delivery's current acknowledged state rather than stable
-creation-time evidence. Step 2.6 owns only these presentation semantics. No release, installation,
-or live verification has occurred.
+Step 2.6 recursively removes nulls only from rendered detail while preserving API JSON, and the
+creation-stage lifecycle row now shows the immutable delivery ID instead of a later terminal state.
+All implementation and review-repair rows are complete at 149 passing tests. The checkpoint had no
+configured commands and was recorded as skipped. No release, installation, or live verification
+has occurred.
 
 ## Next concrete action
 
-Dispatch one executor for step 2.6, then rerun the full gate and a new fresh-context visual QA pass.
-Release only if both pass.
+Run the full gate, focused independent review, and a new fresh-context visual QA pass on the final
+revision. Release only if all three pass.
 
 ## Blockers / open questions
 

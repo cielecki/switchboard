@@ -85,3 +85,10 @@ still found raw `null` in a nested completed-run fact and a misleading terminal 
 creation-stage lifecycle row. Step 2.6 will add recursive presentation-only null handling and stable
 creation-time evidence without changing API data or retry behavior. Release remains blocked until
 the step, final gate, and another fresh visual QA pass.
+
+## 2026-10-01T10:28:51Z — lifecycle presentation repair complete
+
+Step 2.6 now removes nested nulls only from rendered detail and uses immutable creation evidence in
+the lifecycle. The suite has 149 passing tests; both plugin validators and embedded JavaScript
+syntax checks pass. The checkpoint had no configured commands and was recorded as an explicit skip.
+Release remains blocked until the final gate, focused independent review, and fresh visual QA pass.
