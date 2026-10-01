@@ -129,6 +129,77 @@ class DoctorTest(unittest.TestCase):
             )
         self.assertNotIn("schedule.overdue", {item["code"] for item in result["findings"]})
 
+    def test_schedule_backoff_is_reported_without_a_redundant_overdue_warning(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("switchboard.doctor.sys.platform", "linux"),
+            patch("switchboard.core.now", return_value="2026-10-01T06:00:00+00:00"),
+        ):
+            root = Path(directory)
+            script = root / "status.py"
+            script.touch()
+            db = Database(root / "switchboard.sqlite3")
+            core.upsert_ingest_schedule(
+                db, "ingest", status_script=script, every_seconds=60
+            )
+            run = core.start_scheduled_adapter_run(
+                db, "ingest", started_at="2026-10-01T08:00:00+00:00"
+            )
+            core.finish_scheduled_adapter_run(
+                db,
+                "ingest",
+                run["id"],
+                state="failed",
+                error="mailbox offline",
+                finished_at="2026-10-01T08:00:00+00:00",
+            )
+            result = run_doctor(
+                db, now_at=datetime.fromisoformat("2026-10-01T08:00:10+00:00")
+            )
+
+        findings = {item["code"]: item for item in result["findings"]}
+        self.assertIn("schedule.retry-backoff", findings)
+        self.assertNotIn("schedule.last-run-failed", findings)
+        self.assertNotIn("schedule.overdue", findings)
+        self.assertEqual(findings["schedule.retry-backoff"]["failure_streak"], 1)
+        self.assertEqual(
+            findings["schedule.retry-backoff"]["retry_not_before"],
+            "2026-10-01T08:00:30+00:00",
+        )
+        self.assertEqual(result["queues"]["open_schedule_alert_episodes"], 1)
+
+    def test_inconsistent_schedule_retry_state_is_an_error(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("switchboard.doctor.sys.platform", "linux"),
+            patch("switchboard.core.now", return_value="2026-10-01T08:00:00+00:00"),
+        ):
+            root = Path(directory)
+            script = root / "status.py"
+            script.touch()
+            db = Database(root / "switchboard.sqlite3")
+            core.upsert_ingest_schedule(
+                db, "ingest", status_script=script, every_seconds=60
+            )
+            with db.transaction() as connection:
+                connection.execute(
+                    "UPDATE adapter_schedules SET failure_streak=1 WHERE id='ingest'"
+                )
+            result = run_doctor(
+                db, now_at=datetime.fromisoformat("2026-10-01T08:00:00+00:00")
+            )
+
+        finding = next(
+            item
+            for item in result["findings"]
+            if item["code"] == "schedule.retry-state-inconsistent"
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(finding["schedule_id"], "ingest")
+        self.assertIn(
+            "failure streak has no retry deadline", finding["inconsistencies"]
+        )
+
     def test_unclaimed_accepted_wake_is_a_warning(self) -> None:
         with (
             tempfile.TemporaryDirectory() as directory,

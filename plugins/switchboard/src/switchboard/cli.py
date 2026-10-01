@@ -885,13 +885,59 @@ def print_result(value: Any, machine: bool) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def print_schedule_list(schedules: list[dict[str, Any]]) -> None:
+    if not schedules:
+        print("No schedules.")
+        return
+    headers = (
+        "ID",
+        "KIND",
+        "ENABLED",
+        "NEXT RUN",
+        "RETRY",
+        "STREAK",
+        "EPISODE",
+        "LAST FAILURE",
+    )
+    rows: list[tuple[str, ...]] = []
+    for schedule in schedules:
+        retry = schedule["retry"]
+        episode = retry["episode"] or {}
+        last_failure = retry["last_failure"] or {}
+        failure = last_failure.get("at") or "—"
+        if last_failure.get("detail"):
+            failure += f" · {last_failure['detail']}"
+        rows.append(
+            (
+                schedule["id"],
+                schedule["schedule_kind"],
+                "yes" if schedule["enabled"] else "no",
+                schedule.get("next_run_local") or schedule["next_run_at"],
+                retry["next_retry_at"] or "—",
+                str(retry["failure_streak"]),
+                episode.get("state", "—"),
+                failure,
+            )
+        )
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in rows))
+        for index in range(len(headers))
+    ]
+    print("  ".join(value.ljust(widths[index]) for index, value in enumerate(headers)))
+    for row in rows:
+        print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     db = Database(args.db)
     try:
         result = dispatch(args, db)
-        print_result(result, args.json)
+        if args.command == "schedule" and args.verb == "list" and not args.json:
+            print_schedule_list(result)
+        else:
+            print_result(result, args.json)
         if args.command == "doctor" and result["errors"]:
             return 1
         return 0

@@ -76,14 +76,11 @@ class ScheduleRetryStateTest(unittest.TestCase):
             core.due_schedules(self.db, "2026-10-01T08:00:29+00:00"), []
         )
         reopened = Database(self.db.path)
+        due = core.due_schedules(reopened, "2026-10-01T08:00:30+00:00")
+        self.assertEqual([item["id"] for item in due], ["ingest"])
+        self.assertEqual(due[0]["retry"]["state"], "active")
         self.assertEqual(
-            [
-                item["id"]
-                for item in core.due_schedules(
-                    reopened, "2026-10-01T08:00:30+00:00"
-                )
-            ],
-            ["ingest"],
+            due[0]["retry"]["episode"]["id"], "schedule-alert-1"
         )
 
     def test_stream_schedule_is_not_gated_by_retry_state(self) -> None:

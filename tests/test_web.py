@@ -31,6 +31,21 @@ class WebTest(unittest.TestCase):
             timezone="Europe/Warsaw",
             at="2026-09-24T04:00:00+00:00",
         )
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE adapter_schedules SET last_state='failed', failure_streak=1, "
+                "last_failure_at='2026-10-01T08:00:00+00:00', "
+                "last_failure_detail='timer unavailable', "
+                "retry_not_before='2026-10-01T08:00:30+00:00' WHERE id='daily'"
+            )
+            connection.execute(
+                "INSERT INTO schedule_alert_episodes("
+                "id,schedule_id,state,opened_at,updated_at,failure_count,"
+                "last_failure_at,detail) VALUES("
+                "'salert-web','daily','open','2026-10-01T08:00:00+00:00',"
+                "'2026-10-01T08:00:00+00:00',1,'2026-10-01T08:00:00+00:00',"
+                "'timer unavailable')"
+            )
         core.start_adapter_run(self.db, "test-adapter")
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self.db))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -50,6 +65,10 @@ class WebTest(unittest.TestCase):
         self.assertIn('<h2>Needs attention</h2>', html)
         self.assertIn('<h2>Source health</h2>', html)
         self.assertIn('<summary>Technical inventory</summary>', html)
+        self.assertIn('Schedule retry · ${esc(s.id)}', html)
+        self.assertIn("'retry_state'", html)
+        self.assertIn("'next_retry_at'", html)
+        self.assertNotIn("fetch(url,{method:'POST'", html)
 
         with urllib.request.urlopen(f"{self.base_url}/api/spaces") as response:
             spaces = json.load(response)
@@ -67,6 +86,12 @@ class WebTest(unittest.TestCase):
             schedules = json.load(response)
         self.assertEqual(schedules[0]["schedule_kind"], "calendar")
         self.assertEqual(schedules[0]["next_run_local"], "2026-09-24T07:00:00+02:00")
+        self.assertEqual(schedules[0]["retry"]["state"], "active")
+        self.assertEqual(schedules[0]["retry"]["failure_streak"], 1)
+        self.assertEqual(
+            schedules[0]["retry"]["next_retry_at"], "2026-10-01T08:00:30+00:00"
+        )
+        self.assertEqual(schedules[0]["retry"]["episode"]["state"], "open")
 
         with urllib.request.urlopen(f"{self.base_url}/api/routes") as response:
             routes = json.load(response)

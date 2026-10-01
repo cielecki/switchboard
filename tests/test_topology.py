@@ -123,6 +123,45 @@ class TopologyTest(unittest.TestCase):
         self.assertEqual(episode["state"], "recovered")
         self.assertEqual(episode["recovery_reason"], "material-update")
 
+    def test_topology_reenable_resets_retry_through_the_shared_schedule_core(self) -> None:
+        apply_topology(self.db, self.document)
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE adapter_schedules SET failure_streak=1, "
+                "last_failure_at='2026-10-01T08:00:00+00:00', "
+                "last_failure_detail='offline', "
+                "retry_not_before='2026-10-01T08:00:30+00:00' WHERE id='daily'"
+            )
+            connection.execute(
+                "INSERT INTO schedule_alert_episodes("
+                "id,schedule_id,state,opened_at,updated_at,failure_count,"
+                "last_failure_at,detail) VALUES("
+                "'alert-reenable','daily','open','2026-10-01T08:00:00+00:00',"
+                "'2026-10-01T08:00:00+00:00',1,'2026-10-01T08:00:00+00:00','offline')"
+            )
+
+        disabled = json.loads(json.dumps(self.document))
+        disabled["schedules"][0]["enabled"] = False
+        apply_topology(self.db, disabled)
+        self.assertEqual(core.get_schedule(self.db, "daily")["failure_streak"], 1)
+        self.assertEqual(
+            self.db.row(
+                "SELECT state FROM schedule_alert_episodes WHERE id='alert-reenable'"
+            )["state"],
+            "open",
+        )
+
+        apply_topology(self.db, self.document)
+        schedule = core.get_schedule(self.db, "daily")
+        episode = self.db.row(
+            "SELECT * FROM schedule_alert_episodes WHERE id='alert-reenable'"
+        )
+        self.assertEqual(schedule["retry"]["state"], "clear")
+        self.assertEqual(schedule["failure_streak"], 0)
+        self.assertIsNone(schedule["retry_not_before"])
+        self.assertEqual(episode["state"], "recovered")
+        self.assertEqual(episode["recovery_reason"], "re-enabled")
+
     def test_unmanaged_difference_is_a_conflict(self) -> None:
         core.create_space(self.db, "demo", "Other")
         plan = plan_topology(self.db, self.document)
@@ -141,6 +180,21 @@ class TopologyTest(unittest.TestCase):
             every_seconds=60,
             space_id="demo",
         )
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE adapter_schedules SET failure_streak=1, "
+                "last_failure_at='2026-10-01T08:00:00+00:00', "
+                "last_failure_detail='private failure detail', "
+                "retry_not_before='2026-10-01T08:00:30+00:00' WHERE id='ingest'"
+            )
+            connection.execute(
+                "INSERT INTO schedule_alert_episodes("
+                "id,schedule_id,state,opened_at,updated_at,failure_count,"
+                "last_failure_at,detail) VALUES("
+                "'private-episode','ingest','open','2026-10-01T08:00:00+00:00',"
+                "'2026-10-01T08:00:00+00:00',1,'2026-10-01T08:00:00+00:00',"
+                "'private failure detail')"
+            )
         exported = export_topology(self.db)
         encoded = json.dumps(exported)
         self.assertNotIn(str(script), encoded)
@@ -148,6 +202,10 @@ class TopologyTest(unittest.TestCase):
         self.assertIn("${PATH_1}", encoded)
         self.assertIn("${CONSUMER_1}", encoded)
         self.assertNotIn("claude://resume/session-1", encoded)
+        self.assertNotIn("failure_streak", encoded)
+        self.assertNotIn("retry_not_before", encoded)
+        self.assertNotIn("private failure detail", encoded)
+        self.assertNotIn("private-episode", encoded)
         self.assertIn("${URL_1}", encoded)
 
         private = json.dumps(export_topology(self.db, include_local_values=True))

@@ -43,6 +43,16 @@ class CliTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         return payload["data"]
 
+    def invoke_human(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-m", "switchboard.cli", "--db", self.db, *arguments],
+            capture_output=True,
+            text=True,
+            env=self.environment,
+            check=False,
+            timeout=30,
+        )
+
     def test_cli_vertical_slice(self) -> None:
         self.run_cli("space", "create", "demo")
         self.run_cli("source", "register", "mail", "--space", "demo", "--kind", "mail")
@@ -239,6 +249,60 @@ class CliTest(unittest.TestCase):
             (source["id"], source["space_id"], source["kind"], source["state"]),
             ("timer/work-inbox", "work-inbox", "timer", "enabled"),
         )
+
+    def test_schedule_list_projects_retry_state_in_json_and_human_output(self) -> None:
+        self.run_cli(
+            "schedule",
+            "add-calendar",
+            "work-inbox",
+            "--space",
+            "work-inbox",
+            "--source",
+            "timer/work-inbox",
+            "--event-type",
+            "inbox.sweep.due",
+            "--at",
+            "07:00",
+            "--timezone",
+            "Europe/Warsaw",
+        )
+        with sqlite3.connect(self.db) as connection:
+            connection.execute(
+                "UPDATE adapter_schedules SET last_state='failed', failure_streak=2, "
+                "last_failure_at='2026-10-01T08:00:00+00:00', "
+                "last_failure_detail='mailbox offline', "
+                "retry_not_before='2026-10-01T08:01:00+00:00' "
+                "WHERE id='work-inbox'"
+            )
+            connection.execute(
+                "INSERT INTO schedule_alert_episodes("
+                "id,schedule_id,state,opened_at,updated_at,failure_count,"
+                "last_failure_at,detail) VALUES("
+                "'salert-test','work-inbox','open','2026-10-01T08:00:00+00:00',"
+                "'2026-10-01T08:00:00+00:00',2,'2026-10-01T08:00:00+00:00',"
+                "'mailbox offline')"
+            )
+
+        schedule = self.run_cli("schedule", "list")[0]
+        self.assertEqual(schedule["retry"]["state"], "active")
+        self.assertEqual(schedule["retry"]["failure_streak"], 2)
+        self.assertEqual(
+            schedule["retry"]["last_failure"],
+            {"at": "2026-10-01T08:00:00+00:00", "detail": "mailbox offline"},
+        )
+        self.assertEqual(
+            schedule["retry"]["next_retry_at"], "2026-10-01T08:01:00+00:00"
+        )
+        self.assertEqual(schedule["retry"]["episode"]["state"], "open")
+
+        human = self.invoke_human("schedule", "list")
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertIn("ID", human.stdout)
+        self.assertIn("RETRY", human.stdout)
+        self.assertIn("STREAK", human.stdout)
+        self.assertIn("EPISODE", human.stdout)
+        self.assertIn("2026-10-01T08:01:00+00:00", human.stdout)
+        self.assertIn("mailbox offline", human.stdout)
 
     def test_calendar_schedule_rejects_incompatible_source_atomically(self) -> None:
         self.run_cli("space", "create", "work-inbox")

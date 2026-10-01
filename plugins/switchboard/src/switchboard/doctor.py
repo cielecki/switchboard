@@ -82,6 +82,37 @@ def run_doctor(db: Database, *, now_at: datetime | None = None) -> dict[str, Any
     sources = {source["id"]: source for source in core.list_sources(db)}
     for schedule in schedules:
         config = schedule["config"]
+        retry = schedule["retry"]
+        retry_deadline = _parse(retry["next_retry_at"])
+        if retry["state"] == "inconsistent":
+            _finding(
+                findings,
+                "error",
+                "schedule.retry-state-inconsistent",
+                f"{schedule['id']} has inconsistent retry state",
+                schedule_id=schedule["id"],
+                failure_streak=retry["failure_streak"],
+                retry_not_before=retry["next_retry_at"],
+                episode_id=(retry["episode"] or {}).get("id"),
+                inconsistencies=retry["inconsistencies"],
+            )
+        elif schedule["enabled"] and retry["state"] == "active":
+            waiting = retry_deadline is not None and retry_deadline > checked_at
+            _finding(
+                findings,
+                "warning",
+                "schedule.retry-backoff" if waiting else "schedule.retry-ready",
+                (
+                    f"{schedule['id']} is backing off after a scheduled failure"
+                    if waiting
+                    else f"{schedule['id']} is ready for a scheduled retry"
+                ),
+                schedule_id=schedule["id"],
+                failure_streak=retry["failure_streak"],
+                last_failure=retry["last_failure"],
+                retry_not_before=retry["next_retry_at"],
+                episode_id=(retry["episode"] or {}).get("id"),
+            )
         if schedule["adapter"] == "timer":
             source_id = config.get("source_id")
             expected_space_id = config.get("space_id")
@@ -119,7 +150,11 @@ def run_doctor(db: Database, *, now_at: datetime | None = None) -> dict[str, Any
                     f"{schedule['id']} {key} is missing",
                     path=value,
                 )
-        if schedule["enabled"] and schedule["last_state"] == "failed":
+        if (
+            schedule["enabled"]
+            and schedule["last_state"] == "failed"
+            and retry["state"] == "clear"
+        ):
             _finding(
                 findings,
                 "warning",
@@ -142,9 +177,16 @@ def run_doctor(db: Database, *, now_at: datetime | None = None) -> dict[str, Any
                 or _parse(schedule["last_started_at"]) > _parse(schedule["last_finished_at"])
             )
         )
+        retry_blocks_due = (
+            schedule["enabled"]
+            and retry["state"] == "active"
+            and retry_deadline is not None
+            and retry_deadline > checked_at
+        )
         if (
             schedule["enabled"]
             and not stream_is_running
+            and not retry_blocks_due
             and next_run
             and next_run
             < checked_at - timedelta(seconds=overdue_seconds)
@@ -270,6 +312,12 @@ def run_doctor(db: Database, *, now_at: datetime | None = None) -> dict[str, Any
     accepted = core.list_processor_deliveries(db, "accepted")
     accepted_waits = core.list_deliveries(db, "accepted")
     open_alerts = core.list_processor_alerts(db, "open")
+    open_schedule_alerts = [
+        schedule["retry"]["episode"]
+        for schedule in schedules
+        if schedule["retry"]["episode"] is not None
+        and schedule["retry"]["episode"]["state"] == "open"
+    ]
     active_leases = db.row(
         "SELECT count(*) AS count FROM processor_attempts WHERE state='running' AND lease_expires_at>?",
         (checked_at.isoformat(),),
@@ -358,6 +406,7 @@ def run_doctor(db: Database, *, now_at: datetime | None = None) -> dict[str, Any
             "accepted_processor_deliveries": len(accepted),
             "active_leases": active_leases,
             "open_alert_episodes": len(open_alerts),
+            "open_schedule_alert_episodes": len(open_schedule_alerts),
         },
         "findings": findings,
         "errors": errors,

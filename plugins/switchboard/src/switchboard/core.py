@@ -897,9 +897,63 @@ def upsert_calendar_schedule(
     return get_schedule(db, schedule_id)
 
 
-def _present_schedule(schedule: dict[str, Any]) -> dict[str, Any]:
+def _schedule_retry_projection(
+    schedule: dict[str, Any], episode: dict[str, Any] | None
+) -> dict[str, Any]:
+    failure_streak = int(schedule["failure_streak"])
+    last_failure_at = schedule.get("last_failure_at")
+    last_failure_detail = schedule.get("last_failure_detail")
+    retry_not_before = schedule.get("retry_not_before")
+    open_episode = episode is not None and episode["state"] == "open"
+    inconsistencies: list[str] = []
+    if failure_streak == 0:
+        if any(
+            value is not None
+            for value in (last_failure_at, last_failure_detail, retry_not_before)
+        ):
+            inconsistencies.append("clear schedule retains failure fields")
+        if open_episode:
+            inconsistencies.append("clear schedule has an open alert episode")
+    else:
+        if last_failure_at is None:
+            inconsistencies.append("failure streak has no last failure time")
+        if last_failure_detail is None:
+            inconsistencies.append("failure streak has no failure detail")
+        if retry_not_before is None:
+            inconsistencies.append("failure streak has no retry deadline")
+        if not open_episode:
+            inconsistencies.append("failure streak has no open alert episode")
+        elif int(episode["failure_count"]) != failure_streak:
+            inconsistencies.append("alert episode failure count differs from schedule")
+        if open_episode and episode["last_failure_at"] != last_failure_at:
+            inconsistencies.append("alert episode last failure differs from schedule")
+
+    return {
+        "state": (
+            "inconsistent"
+            if inconsistencies
+            else "active"
+            if failure_streak
+            else "clear"
+        ),
+        "failure_streak": failure_streak,
+        "last_failure": (
+            {"at": last_failure_at, "detail": last_failure_detail}
+            if last_failure_at is not None or last_failure_detail is not None
+            else None
+        ),
+        "next_retry_at": retry_not_before,
+        "episode": dict(episode) if episode is not None else None,
+        "inconsistencies": inconsistencies,
+    }
+
+
+def _present_schedule(
+    schedule: dict[str, Any], episode: dict[str, Any] | None = None
+) -> dict[str, Any]:
     result = decode_json_fields(schedule, "config_json")
     result["enabled"] = bool(result["enabled"])
+    result["retry"] = _schedule_retry_projection(result, episode)
     if result.get("schedule_kind") == "calendar":
         rule = result["config"]["calendar"]
         zone = ZoneInfo(rule["timezone"])
@@ -913,7 +967,22 @@ def get_schedule(db: Database, schedule_id: str) -> dict[str, Any]:
     row = db.row("SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,))
     if row is None:
         raise ValueError(f"schedule not found: {schedule_id}")
-    return _present_schedule(row)
+    episode = db.row(
+        "SELECT * FROM schedule_alert_episodes WHERE schedule_id=? "
+        "ORDER BY (state='open') DESC, opened_at DESC, id DESC LIMIT 1",
+        (schedule_id,),
+    )
+    return _present_schedule(row, episode)
+
+
+def _latest_schedule_episodes(db: Database) -> dict[str, dict[str, Any]]:
+    episodes: dict[str, dict[str, Any]] = {}
+    for episode in db.rows(
+        "SELECT * FROM schedule_alert_episodes ORDER BY schedule_id, "
+        "(state='open') DESC, opened_at DESC, id DESC"
+    ):
+        episodes.setdefault(episode["schedule_id"], episode)
+    return episodes
 
 
 def list_schedules(db: Database, *, enabled: bool | None = None) -> list[dict[str, Any]]:
@@ -923,7 +992,11 @@ def list_schedules(db: Database, *, enabled: bool | None = None) -> list[dict[st
         query += " WHERE enabled=?"
         params = (int(enabled),)
     query += " ORDER BY id"
-    return [_present_schedule(row) for row in db.rows(query, params)]
+    episodes = _latest_schedule_episodes(db)
+    return [
+        _present_schedule(row, episodes.get(row["id"]))
+        for row in db.rows(query, params)
+    ]
 
 
 def repair_calendar_source(db: Database, schedule_id: str) -> dict[str, Any]:
@@ -1112,8 +1185,9 @@ def delete_schedule(db: Database, schedule_id: str) -> dict[str, Any]:
 
 def due_schedules(db: Database, at: str | None = None) -> list[dict[str, Any]]:
     timestamp = at or now()
+    episodes = _latest_schedule_episodes(db)
     schedules = [
-        _present_schedule(row)
+        _present_schedule(row, episodes.get(row["id"]))
         for row in db.rows(
             "SELECT * FROM adapter_schedules WHERE enabled=1 AND next_run_at<=? "
             "AND (adapter='command-stream' OR retry_not_before IS NULL "
