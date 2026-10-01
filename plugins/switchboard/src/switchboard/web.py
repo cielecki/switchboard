@@ -16,7 +16,7 @@ HTML = """<!doctype html>
   <style>
     :root { color-scheme:dark; font-family:Inter,ui-sans-serif,system-ui,sans-serif; }
     * { box-sizing:border-box; } body { margin:0; background:#090d18; color:#eef2ff; }
-    main { max-width:1240px; margin:auto; padding:32px 22px 64px; }
+    main { width:100%; max-width:1240px; min-width:0; margin:auto; padding:32px 22px 64px; }
     header,.row { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
     h1 { margin:0; font-size:30px; } h2 { margin:0 0 14px; font-size:19px; } h3 { margin:0 0 8px; }
     a { color:#a8c5ff; } .muted { color:#91a0bf; } .tiny { font-size:12px; }
@@ -24,15 +24,22 @@ HTML = """<!doctype html>
     .nav a,.pill { padding:7px 11px; border:1px solid #2b385e; border-radius:999px; text-decoration:none; }
     .nav a.active { background:#27437b; color:white; }
     .metrics,.lanes { display:grid; grid-template-columns:repeat(auto-fit,minmax(185px,1fr)); gap:12px; }
-    .metric,.card,section,details { background:#11182a; border:1px solid #253251; border-radius:13px; }
+    .metric,.card,section,details { min-width:0; background:#11182a; border:1px solid #253251; border-radius:13px; }
     .metric,.card,section { padding:15px; } section { margin-top:14px; }
     .metric strong { display:block; font-size:28px; margin-top:5px; }
     .card { margin-bottom:9px; } .danger { border-color:#8e3e52; } .warning { border-color:#8c6a2b; }
     .badge { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:#aab8d7; }
     .summary { margin:8px 0; line-height:1.45; }
-    table { width:100%; border-collapse:collapse; font-size:13px; }
+    .table-scroll { max-width:100%; overflow-x:auto; overscroll-behavior-inline:contain; }
+    table { width:max-content; min-width:100%; border-collapse:collapse; font-size:13px; }
     th,td { padding:9px 7px; border-bottom:1px solid #253251; text-align:left; vertical-align:top; }
-    th { color:#91a0bf; } code { color:#c1d0ff; overflow-wrap:anywhere; }
+    th { color:#91a0bf; white-space:nowrap; }
+    code { color:#c1d0ff; }
+    .col-token { min-width:12rem; } .col-state { min-width:7rem; } .col-time { min-width:12rem; }
+    .col-token code,.col-state code,.col-time code { white-space:nowrap; overflow-wrap:normal; word-break:normal; }
+    .col-detail { min-width:16rem; max-width:30rem; }
+    .col-detail code { display:block; white-space:normal; overflow-wrap:anywhere; word-break:break-word; }
+    .placeholder { color:#71809e; font-family:inherit; }
     details { margin-top:14px; padding:12px 15px; overflow:auto; } summary { cursor:pointer; font-weight:650; }
     pre { white-space:pre-wrap; overflow-wrap:anywhere; color:#c1d0ff; }
     .empty { color:#71809e; margin:8px 0; } .good { color:#7ee2ad; }
@@ -58,7 +65,12 @@ const fmt=v=>v?new Date(v).toLocaleString():'';
 const params=new URLSearchParams(location.search), selected=params.get('space'), selectedRun=params.get('run');
 const scoped=rows=>selected?rows.filter(r=>r.space_id===selected||r.config?.space_id===selected):rows;
 function link(url,label){return url&&/^(https?|claude|codex):/i.test(url)?`<a href="${esc(url)}">${esc(label)}</a>`:esc(label)}
-function table(rows,cols){if(!rows.length)return '<p class="empty">None</p>';return '<table><thead><tr>'+cols.map(c=>`<th>${esc(c)}</th>`).join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(c=>`<td><code>${esc(typeof r[c]==='object'?JSON.stringify(r[c]):r[c])}</code></td>`).join('')+'</tr>').join('')+'</tbody></table>'}
+const tokenColumns=new Set(['processor','consumer','event_type']);
+const stateColumns=new Set(['state','status','kind','schedule_kind','health_state','retry_state','episode_state','last_state','enabled']);
+const detailColumns=new Set(['detail','health_detail','last_error','predicate','target','url']);
+function columnClass(column){if(column==='id'||column.endsWith('_id')||tokenColumns.has(column))return 'col-token';if(stateColumns.has(column))return 'col-state';if(column.endsWith('_at')||column==='next_run_local')return 'col-time';if(detailColumns.has(column))return 'col-detail';return ''}
+function renderCell(value){if(value===null||value===undefined||value==='')return '<span class="placeholder">—</span>';return `<code>${esc(typeof value==='object'?JSON.stringify(value):value)}</code>`}
+function table(rows,cols){if(!rows.length)return '<p class="empty">None</p>';return '<div class="table-scroll" role="region" tabindex="0"><table><thead><tr>'+cols.map(c=>`<th class="${columnClass(c)}">${esc(c)}</th>`).join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(c=>`<td class="${columnClass(c)}">${renderCell(r[c])}</td>`).join('')+'</tr>').join('')+'</tbody></table></div>'}
 function runCard(r){return `<div class="card ${r.state==='failed'?'danger':''}"><div class="row"><span class="badge">${esc(r.processor)} · ${esc(r.state)}</span><span class="tiny muted">${fmt(r.updated_at)}</span></div><div class="summary">${esc(r.summary||r.id)}</div><a href="?${selected?'space='+encodeURIComponent(selected)+'&':''}run=${encodeURIComponent(r.id)}">Lifecycle</a></div>`}
 function reviewCard(r){return `<div class="card warning"><div class="row"><span class="badge">${esc(r.space_id)} · ${r.open_run_count} item${r.open_run_count===1?'':'s'}</span><span class="tiny muted">${fmt(r.updated_at)}</span></div><div class="summary"><strong>${esc(r.title)}</strong><br>${esc(r.summary)}</div>${link(r.url,r.url?'Open decision chat':'No linked chat')}<div class="tiny muted">Resolve via CLI · <code>${esc(r.id)}</code></div></div>`}
 function scheduleRetryCard(s){const r=s.retry||{},e=r.episode||{},f=r.last_failure||{};return `<div class="card ${r.state==='inconsistent'?'danger':'warning'}"><div class="row"><strong>Schedule retry · ${esc(s.id)}</strong><span class="badge">${esc(r.state)}</span></div><div class="summary">Failure streak ${esc(r.failure_streak)} · next retry ${esc(fmt(r.next_retry_at)||'not recorded')}<br>${esc(f.detail||'No failure detail')}</div><div class="tiny muted">Episode <code>${esc(e.id||'missing')}</code> · ${esc(e.state||'missing')}</div></div>`}

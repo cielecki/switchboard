@@ -20,7 +20,7 @@
 | 2 | 2.1 | Expose consistent retry state in CLI, doctor, web, and topology behavior | done | ed3a0a2 |
 | 2 | 2.2 | Prove retry, restart, recovery, and occurrence-once invariants | done | f699d15 |
 | 2 | 2.3 | Preserve interval occurrence identity across the 0.11.5 upgrade boundary | done | f0fa967 |
-| 2 | 2.4 | Restore dashboard table readability across responsive viewports | todo | — |
+| 2 | 2.4 | Restore dashboard table readability across responsive viewports | done | 2c80185 |
 | 3 | 3.1 | Document bounded retry and prepare release 0.11.6 | done | bcb2380 |
 
 ## Goal

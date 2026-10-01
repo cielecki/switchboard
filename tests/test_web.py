@@ -68,6 +68,17 @@ class WebTest(unittest.TestCase):
         self.assertIn('Schedule retry · ${esc(s.id)}', html)
         self.assertIn("'retry_state'", html)
         self.assertIn("'next_retry_at'", html)
+        self.assertIn('.table-scroll { max-width:100%; overflow-x:auto;', html)
+        self.assertIn(
+            '.col-token code,.col-state code,.col-time code { white-space:nowrap;', html
+        )
+        self.assertIn("column==='id'||column.endsWith('_id')", html)
+        self.assertIn('.col-detail code { display:block; white-space:normal;', html)
+        self.assertIn(
+            'return \'<div class="table-scroll" role="region" tabindex="0"><table>', html
+        )
+        self.assertIn("if(value===null||value===undefined||value==='')", html)
+        self.assertIn('<span class="placeholder">—</span>', html)
         self.assertNotIn("fetch(url,{method:'POST'", html)
 
         with urllib.request.urlopen(f"{self.base_url}/api/spaces") as response:
@@ -92,6 +103,7 @@ class WebTest(unittest.TestCase):
             schedules[0]["retry"]["next_retry_at"], "2026-10-01T08:00:30+00:00"
         )
         self.assertEqual(schedules[0]["retry"]["episode"]["state"], "open")
+        self.assertIsNone(schedules[0]["last_error"])
 
         with urllib.request.urlopen(f"{self.base_url}/api/routes") as response:
             routes = json.load(response)
