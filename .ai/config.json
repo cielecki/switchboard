@@ -1,0 +1,19 @@
+{
+  "integration": "commit-to-main",
+  "useWorktree": false,
+  "issueRepo": "cielecki/switchboard",
+  "verify": {
+    "perStep": [
+      "uv run python -m unittest discover -s tests -v",
+      "npx --yes @anthropic-ai/claude-code plugin validate plugins/switchboard",
+      "npx --yes @anthropic-ai/claude-code plugin validate .claude-plugin/marketplace.json"
+    ],
+    "finalGate": [
+      "uv run --isolated --python 3.12 python -m unittest discover -s tests -v",
+      "uv run --isolated --python 3.13 python -m unittest discover -s tests -v",
+      "tmpdir=\"$(mktemp -d)\" && trap 'rm -rf \"$tmpdir\"' EXIT && uv build --out-dir \"$tmpdir/dist\" && uv venv --python 3.12 \"$tmpdir/venv\" && uv pip install --python \"$tmpdir/venv/bin/python\" \"$tmpdir\"/dist/*.whl && \"$tmpdir/venv/bin/python\" scripts/acceptance.py --switchboard \"$tmpdir/venv/bin/switchboard\"",
+      "npx --yes @anthropic-ai/claude-code plugin validate plugins/switchboard",
+      "npx --yes @anthropic-ai/claude-code plugin validate .claude-plugin/marketplace.json"
+    ]
+  }
+}
