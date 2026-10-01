@@ -107,3 +107,19 @@ Step 2.7 now uses terminal attempt timestamps and chronologically sorts the life
 150 passing tests; both plugin validators and JavaScript syntax checks pass. The checkpoint had no
 configured commands and was recorded as an explicit skip. All plan rows are complete; release
 remains blocked until the final gate, focused review, and fresh visual QA pass.
+
+## 2026-10-01T11:41:45Z — run complete
+
+The final gate passed 150 tests on Python 3.12 and 3.13, isolated wheel acceptance, and both plugin
+validators. Independent code review and complete desktop/narrow visual QA returned PASS. Release
+v0.11.6 was published at `96f81d4`; both plugin hosts and the persistent service were updated; the
+live database migrated from schema 9 to 11 after a verified pre-upgrade backup.
+
+The first controlled test proved restart persistence and bounded 30/60/120-second retries but its
+mode switch raced the third deadline, so the issue remained open. A fresh isolated rerun then
+produced exactly two failed attempts at 30-second and 60-second deadlines followed by one successful
+third attempt. One internal episode recovered once, later polls created no duplicate, and the test
+had no event, processor-run, delivery, Slack, chat, or external-alert path. Cleanup removed the
+temporary schedule and files; production inboxes, routes, and bindings remained unchanged; queues
+were empty; doctor finished with zero errors and warnings. Issue #3 is closed and its ship lock is
+released. Private evidence and both verified backups remain outside Git.
