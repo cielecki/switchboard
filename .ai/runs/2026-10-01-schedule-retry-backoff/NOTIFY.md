@@ -55,3 +55,10 @@ tables become unreadable through character-by-character wrapping, the narrow pag
 horizontally, and absent values display as raw `null`. The retry card and read-only contract passed.
 Step 2.4 will fix only these presentation defects; final gate, review, and fresh visual QA must run
 again before release.
+
+## 2026-10-01T09:23:09Z — review repairs complete
+
+Step 2.4 fixed the responsive dashboard tables and passed 145 tests, both plugin validators, and
+embedded JavaScript syntax checks. The checkpoint had no configured commands and was recorded as
+an explicit skip. All implementation and repair rows are complete; release remains blocked until
+the repeated full gate, independent diff review, and fresh rendered visual QA pass.
