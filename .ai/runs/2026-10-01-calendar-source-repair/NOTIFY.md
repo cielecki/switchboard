@@ -37,3 +37,17 @@ Step 3.1 is complete and pushed to `main`. Operator documentation and all releas
 are aligned at 0.11.5; 119 tests, both plugin validators, prose lint, and factual review passed.
 The checkpoint had no configured commands and was recorded as an explicit skip. Implementation is
 complete, while release, installation, and live state remain untouched pending the final gate.
+
+## 2026-10-01T06:45:05Z — run complete
+
+The final gate passed 119 tests on Python 3.12 and 3.13, isolated wheel build/install acceptance,
+and both plugin validators. Independent review passed after the PLAN ledger was corrected to point
+at reachable amended commits. Release v0.11.5 was published at `b209274`; issue #2 was closed and
+its ship lock released. Both plugin hosts now run 0.11.5.
+
+The two approved live legacy sources were backed up and repaired through the CLI. Each overdue
+schedule created one logical event, run, and delivery; both runs completed with one attempt, both
+deliveries were acknowledged, and repeated polling plus service restart created no duplicates.
+The private topology now plans with zero changes or conflicts, the persistent service uses the
+0.11.5 launcher with its preserved settings, and doctor finishes with zero errors and warnings.
+Private operational evidence and the verified backup remain outside Git.
