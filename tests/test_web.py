@@ -269,6 +269,65 @@ class WebTest(unittest.TestCase):
             by_stage["wake acknowledged"]["at"], "2026-10-01T08:03:00+00:00"
         )
 
+    def test_run_lifecycle_uses_terminal_attempt_times_in_chronological_order(self) -> None:
+        lifecycle = run_presentation_javascript(
+            "runLifecycle({"
+            "id:'prun-1',created_at:'2026-10-01T08:00:01+00:00',"
+            "state:'completed',completed_at:'2026-10-01T08:00:12+00:00',"
+            "summary:'Handled',"
+            "event:{observed_at:'2026-10-01T08:00:00+00:00',event_type:'mail.ready'},"
+            "delivery:{id:'pdelivery-1',consumer:'chat:worker',"
+            "created_at:'2026-10-01T08:00:02+00:00',"
+            "accepted_at:'2026-10-01T08:00:03+00:00',"
+            "acknowledged_at:'2026-10-01T08:00:11+00:00'},"
+            "attempts:["
+            "{state:'completed',worker:'completed-worker',"
+            "started_at:'2026-10-01T08:00:04+00:00',"
+            "finished_at:'2026-10-01T08:00:10+00:00'},"
+            "{state:'failed',worker:'failed-worker',"
+            "started_at:'2026-10-01T08:00:04+00:00',"
+            "finished_at:'2026-10-01T08:00:05+00:00'},"
+            "{state:'needs-review',worker:'review-worker',"
+            "started_at:'2026-10-01T08:00:04+00:00',"
+            "finished_at:'2026-10-01T08:00:06+00:00'},"
+            "{state:'released',worker:'released-worker',"
+            "started_at:'2026-10-01T08:00:04+00:00',"
+            "finished_at:'2026-10-01T08:00:07+00:00'},"
+            "{state:'expired',worker:'expired-worker',"
+            "started_at:'2026-10-01T08:00:04+00:00',"
+            "finished_at:'2026-10-01T08:00:08+00:00'},"
+            "{state:'running',worker:'running-worker',"
+            "started_at:'2026-10-01T08:00:09+00:00',finished_at:null}"
+            "]})"
+        )
+
+        by_stage = {row["stage"]: row for row in lifecycle}
+        self.assertEqual(
+            by_stage["worker completed"]["at"], "2026-10-01T08:00:10+00:00"
+        )
+        self.assertEqual(
+            by_stage["worker failed"]["at"], "2026-10-01T08:00:05+00:00"
+        )
+        self.assertEqual(
+            by_stage["worker needs-review"]["at"], "2026-10-01T08:00:06+00:00"
+        )
+        self.assertEqual(
+            by_stage["worker released"]["at"], "2026-10-01T08:00:07+00:00"
+        )
+        self.assertEqual(
+            by_stage["worker expired"]["at"], "2026-10-01T08:00:08+00:00"
+        )
+        self.assertEqual(
+            by_stage["worker running"]["at"], "2026-10-01T08:00:09+00:00"
+        )
+        self.assertEqual(
+            by_stage["wake acknowledged"]["at"], "2026-10-01T08:00:11+00:00"
+        )
+        self.assertEqual(
+            [row["at"] for row in lifecycle],
+            sorted(row["at"] for row in lifecycle),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
