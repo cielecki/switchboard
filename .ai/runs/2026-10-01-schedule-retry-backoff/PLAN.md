@@ -23,7 +23,7 @@
 | 2 | 2.4 | Restore dashboard table readability across responsive viewports | done | f7154da |
 | 2 | 2.5 | Polish operator-facing nulls, contrast, and routing copy | done | 88266e7 |
 | 2 | 2.6 | Make run detail and lifecycle stages historically accurate | done | 8d18122 |
-| 2 | 2.7 | Use terminal attempt time in completed lifecycle stages | done | 91a0c84 |
+| 2 | 2.7 | Use terminal attempt time in completed lifecycle stages | done | ceafe02 |
 | 3 | 3.1 | Document bounded retry and prepare release 0.11.6 | done | bcb2380 |
 
 ## Goal

@@ -100,3 +100,10 @@ contrast, containment, and creation-history repairs across 38 detail regions, th
 completed worker stage still displays its attempt start time instead of `finished_at`. Step 2.7 will
 correct only this terminal timestamp mapping and add a chronology regression. Release remains
 blocked until gate, review, and one final fresh visual QA pass.
+
+## 2026-10-01T10:46:20Z — terminal lifecycle timestamp repair complete
+
+Step 2.7 now uses terminal attempt timestamps and chronologically sorts the lifecycle. The suite has
+150 passing tests; both plugin validators and JavaScript syntax checks pass. The checkpoint had no
+configured commands and was recorded as an explicit skip. All plan rows are complete; release
+remains blocked until the final gate, focused review, and fresh visual QA pass.

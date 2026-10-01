@@ -3,24 +3,23 @@
 > Rewritten from scratch at every checkpoint. A brand-new agent should be able to resume in
 > under 30 seconds from this file alone.
 
-- **Last updated:** 2026-10-01T10:42:36Z
+- **Last updated:** 2026-10-01T10:46:20Z
 - **Branch:** main (`integration: commit-to-main`)
 - **PR:** —
-- **Current phase / step:** 2.7 terminal lifecycle timestamp repair
-- **Last commit:** `8d18122` (`fix: preserve lifecycle presentation history`)
+- **Current phase / step:** all implementation complete / release gate
+- **Last commit:** `ceafe02` (`fix: use terminal lifecycle timestamps`)
 
 ## What just happened
 
-The final gate and focused code review pass at 149 tests. Fresh visual QA passed every prior defect
-and all 38 detail regions, then found one remaining lifecycle error: a terminal `worker completed`
-stage uses `started_at` rather than `finished_at`, making the timeline appear nonchronological.
-Step 2.7 owns only this timestamp mapping and its regression. No release, installation, or live
-verification has occurred.
+Step 2.7 maps terminal attempt stages to `finished_at`, keeps running stages on `started_at`, and
+sorts lifecycle rows chronologically. All implementation and review-repair rows are complete at 150
+passing tests. The checkpoint had no configured commands and was recorded as skipped. No release,
+installation, or live verification has occurred.
 
 ## Next concrete action
 
-Dispatch one executor for step 2.7, then run the full gate, focused independent review, and one new
-fresh-context visual QA pass. Release only if all three pass.
+Run the full gate, focused independent review, and one new fresh-context visual QA pass. Release only
+if all three pass.
 
 ## Blockers / open questions
 
