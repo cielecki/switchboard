@@ -333,7 +333,6 @@ class SupervisorTest(unittest.TestCase):
             timezone="Europe/Warsaw",
             at="2026-09-20T12:00:00+00:00",
         )
-        core.create_space(self.db, "inbox")
         with self.db.transaction() as connection:
             connection.execute(
                 "INSERT INTO routes(id, space_id, name, predicate_json, target_json, state, "

@@ -79,8 +79,31 @@ def run_doctor(db: Database, *, now_at: datetime | None = None) -> dict[str, Any
         )
 
     schedules = core.list_schedules(db)
+    sources = {source["id"]: source for source in core.list_sources(db)}
     for schedule in schedules:
         config = schedule["config"]
+        if schedule["adapter"] == "timer":
+            source_id = config.get("source_id")
+            expected_space_id = config.get("space_id")
+            source = sources.get(source_id)
+            if (
+                source is None
+                or source["space_id"] != expected_space_id
+                or source["kind"] != "timer"
+            ):
+                _finding(
+                    findings,
+                    "error",
+                    "schedule.timer-source-mismatch",
+                    f"{schedule['id']} has an incompatible timer source",
+                    schedule_id=schedule["id"],
+                    source_id=source_id,
+                    expected_space_id=expected_space_id,
+                    expected_kind="timer",
+                    observed_space_id=source["space_id"] if source else None,
+                    observed_kind=source["kind"] if source else None,
+                    observed_state=source["state"] if source else "missing",
+                )
         for key in (
             "status_script",
             "discovery_script",

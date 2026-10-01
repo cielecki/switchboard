@@ -20,7 +20,7 @@ class WebTest(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.db = Database(Path(self.directory.name) / "switchboard.sqlite3")
         core.create_space(self.db, "test-space", "Test space")
-        core.register_source(self.db, "test-source", "test-space", "test")
+        core.register_source(self.db, "test-source", "test-space", "timer")
         core.upsert_calendar_schedule(
             self.db,
             "daily",

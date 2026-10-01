@@ -234,6 +234,51 @@ class CliTest(unittest.TestCase):
             ["2026-09-25T05:00:00+00:00", "2026-09-28T05:00:00+00:00"],
         )
         self.assertEqual(updated["revision"], created["revision"] + 1)
+        source = self.run_cli("source", "list")[0]
+        self.assertEqual(
+            (source["id"], source["space_id"], source["kind"], source["state"]),
+            ("timer/work-inbox", "work-inbox", "timer", "enabled"),
+        )
+
+    def test_calendar_schedule_rejects_incompatible_source_atomically(self) -> None:
+        self.run_cli("space", "create", "work-inbox")
+        self.run_cli(
+            "source",
+            "register",
+            "timer/work-inbox",
+            "--space",
+            "work-inbox",
+            "--kind",
+            "calendar",
+        )
+
+        result = self.invoke(
+            "schedule",
+            "add-calendar",
+            "work-inbox",
+            "--space",
+            "work-inbox",
+            "--source",
+            "timer/work-inbox",
+            "--event-type",
+            "inbox.sweep.due",
+            "--at",
+            "07:00",
+            "--timezone",
+            "Europe/Warsaw",
+        )
+
+        self.assertEqual(result.returncode, 2, result.stderr or result.stdout)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "ok": False,
+                "error": (
+                    "source timer/work-inbox is already bound to work-inbox / calendar"
+                ),
+            },
+        )
+        self.assertEqual(self.run_cli("schedule", "list"), [])
 
     def test_json_reports_database_errors_instead_of_a_traceback(self) -> None:
         # A directory cannot be opened as a database, which sqlite3 reports as an

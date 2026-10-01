@@ -117,6 +117,48 @@ def ensure_source(
     return register_source(db, source_id, space_id, kind, config), True
 
 
+def _ensure_timer_source(
+    connection: sqlite3.Connection,
+    *,
+    source_id: str,
+    space_id: str,
+    created_at: str,
+) -> None:
+    source = connection.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
+    if source is not None:
+        if source["space_id"] != space_id or source["kind"] != "timer":
+            raise ValueError(
+                f"source {source_id} is already bound to {source['space_id']} / {source['kind']}"
+            )
+        return
+
+    space = connection.execute("SELECT 1 FROM spaces WHERE id=?", (space_id,)).fetchone()
+    if space is None:
+        connection.execute(
+            "INSERT INTO spaces(id, name, created_at) VALUES(?,?,?)",
+            (space_id, space_id, created_at),
+        )
+        audit(
+            connection,
+            command="space.create",
+            entity_type="space",
+            entity_id=space_id,
+            payload={"name": space_id},
+        )
+    connection.execute(
+        "INSERT INTO sources(id, space_id, kind, state, config_json, created_at) "
+        "VALUES(?,?,?,'enabled','{}',?)",
+        (source_id, space_id, "timer", created_at),
+    )
+    audit(
+        connection,
+        command="source.register",
+        entity_type="source",
+        entity_id=source_id,
+        payload={"space_id": space_id, "kind": "timer", "config": {}},
+    )
+
+
 def list_sources(db: Database) -> list[dict[str, Any]]:
     sources = [
         decode_json_fields(row, "config_json") for row in db.rows("SELECT * FROM sources ORDER BY id")
@@ -461,6 +503,12 @@ def upsert_timer_schedule(
     }
     db.initialize()
     with db.transaction() as connection:
+        _ensure_timer_source(
+            connection,
+            source_id=source_id,
+            space_id=space_id,
+            created_at=timestamp,
+        )
         connection.execute(
             "INSERT INTO adapter_schedules(id, adapter, config_json, schedule_kind, "
             "every_seconds, enabled, next_run_at, created_at, updated_at) "
@@ -547,6 +595,12 @@ def upsert_calendar_schedule(
     encoded = json.dumps(config, sort_keys=True)
     db.initialize()
     with db.transaction() as connection:
+        _ensure_timer_source(
+            connection,
+            source_id=source_id,
+            space_id=space_id,
+            created_at=timestamp,
+        )
         existing = connection.execute(
             "SELECT * FROM adapter_schedules WHERE id=?", (schedule_id,)
         ).fetchone()

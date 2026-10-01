@@ -62,6 +62,55 @@ class DoctorTest(unittest.TestCase):
             )
         self.assertIn("schedule.overdue", {item["code"] for item in result["findings"]})
 
+    def test_timer_source_mismatches_are_errors_even_when_schedules_are_disabled(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("switchboard.doctor.sys.platform", "linux"),
+        ):
+            db = Database(Path(directory) / "switchboard.sqlite3")
+            for schedule_id, enabled in (
+                ("wrong-kind", False),
+                ("wrong-space", True),
+                ("missing", False),
+            ):
+                core.upsert_calendar_schedule(
+                    db,
+                    schedule_id,
+                    space_id="inbox",
+                    source_id=f"timer/{schedule_id}",
+                    event_type="inbox.sweep.due",
+                    local_time="07:00",
+                    timezone="Europe/Warsaw",
+                    enabled=enabled,
+                    at="2026-09-24T04:00:00+00:00",
+                )
+            core.create_space(db, "other")
+            with db.transaction() as connection:
+                connection.execute(
+                    "UPDATE sources SET kind='calendar' WHERE id='timer/wrong-kind'"
+                )
+                connection.execute(
+                    "UPDATE sources SET space_id='other' WHERE id='timer/wrong-space'"
+                )
+                connection.execute("DELETE FROM sources WHERE id='timer/missing'")
+
+            result = run_doctor(
+                db, now_at=datetime.fromisoformat("2026-09-24T04:30:00+00:00")
+            )
+
+        findings = {
+            finding["schedule_id"]: finding
+            for finding in result["findings"]
+            if finding["code"] == "schedule.timer-source-mismatch"
+        }
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(set(findings), {"missing", "wrong-kind", "wrong-space"})
+        self.assertEqual(findings["missing"]["observed_state"], "missing")
+        self.assertEqual(findings["wrong-kind"]["expected_kind"], "timer")
+        self.assertEqual(findings["wrong-kind"]["observed_kind"], "calendar")
+        self.assertEqual(findings["wrong-space"]["expected_space_id"], "inbox")
+        self.assertEqual(findings["wrong-space"]["observed_space_id"], "other")
+
     def test_running_stream_is_not_reported_as_overdue(self) -> None:
         with (
             tempfile.TemporaryDirectory() as directory,
