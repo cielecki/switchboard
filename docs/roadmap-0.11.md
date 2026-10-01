@@ -8,7 +8,7 @@ use the same durable worker chat, which serializes their runs. The 0.11.5 CLI re
 sources. Verification produced exactly one catch-up event, one processor run, and one delivery for
 each schedule, with no duplicates after repeated polls or a restart.
 
-The pending 0.11.6 release adds persisted bounded retry backoff to every non-stream interval and
+Version 0.11.6 adds persisted bounded retry backoff to every non-stream interval and
 calendar schedule. When an occurrence fails, Switchboard keeps its logical cursor and retries after
 30 seconds, 1 minute, 2 minutes, 4 minutes, 8 minutes, and then every 15 minutes. The first failure
 in the streak opens one local alert episode. The bills workflow has not moved to the live

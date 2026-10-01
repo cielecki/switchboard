@@ -19,7 +19,7 @@
 | 1 | 1.2 | Make scheduled attempt finalization and alert episodes atomic | done | a630266 |
 | 2 | 2.1 | Expose consistent retry state in CLI, doctor, web, and topology behavior | done | ed3a0a2 |
 | 2 | 2.2 | Prove retry, restart, recovery, and occurrence-once invariants | done | f699d15 |
-| 2 | 2.3 | Preserve interval occurrence identity across the 0.11.5 upgrade boundary | todo | — |
+| 2 | 2.3 | Preserve interval occurrence identity across the 0.11.5 upgrade boundary | done | ea496c4 |
 | 3 | 3.1 | Document bounded retry and prepare release 0.11.6 | done | bcb2380 |
 
 ## Goal

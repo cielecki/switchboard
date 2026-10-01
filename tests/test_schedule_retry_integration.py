@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from switchboard import core
+from switchboard.adapters.timer import run_timer
 from switchboard.db import Database
 from switchboard.supervisor import ScheduleWorkers, run_cycle
 
@@ -263,10 +264,7 @@ class ScheduleRetryIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(result["schedules"][0]["state"], "completed")
         event = core.list_events(Database(self.path))[0]
-        self.assertEqual(
-            event["external_id"],
-            f"schedule:interval:r{created['revision']}:{due}",
-        )
+        self.assertEqual(event["external_id"], due)
         self.assertEqual(event["attributes"]["scheduled_for"], due)
         self.assertEqual(event["attributes"]["schedule_id"], "interval")
         self.assertEqual(event["attributes"]["schedule_revision"], created["revision"])
@@ -285,6 +283,63 @@ class ScheduleRetryIntegrationTest(unittest.TestCase):
         self.assertEqual(next_run, "2026-10-01T09:00:00+00:00")
         self.assertEqual(len(core.list_events(Database(self.path))), 1)
         self._assert_one_claim_then_none(Database(self.path))
+
+    def test_interval_retry_deduplicates_legacy_event_after_upgrade_crash(self) -> None:
+        due = "2026-10-01T08:00:00+00:00"
+        with patch("switchboard.core.now", return_value=due):
+            core.upsert_timer_schedule(
+                self.db,
+                "legacy-interval",
+                space_id="legacy-space",
+                source_id="timer/legacy-interval",
+                event_type="legacy.due",
+                every_seconds=3600,
+                first_run_at=due,
+            )
+            self._configure_routing(
+                space_id="legacy-space",
+                source_id="timer/legacy-interval",
+                event_type="legacy.due",
+            )
+            legacy = run_timer(
+                self.db,
+                space_id="legacy-space",
+                source_id="timer/legacy-interval",
+                event_type="legacy.due",
+                scheduled_for=due,
+            )
+
+        self.assertEqual(legacy["events"][0]["event"]["external_id"], due)
+        self.assertEqual(
+            core.get_schedule(self.db, "legacy-interval")["next_run_at"], due
+        )
+        self.assertEqual(len(core.list_events(self.db)), 1)
+        self.assertEqual(len(core.list_processor_runs(self.db)), 1)
+        self.assertEqual(len(core.list_processor_deliveries(self.db)), 1)
+
+        retried_at = "2026-10-01T08:00:30+00:00"
+        retried = self._run_cycle(
+            Database(self.path), retried_at, ingest_runner=self._succeed
+        )
+        self.assertEqual(retried["schedules"][0]["state"], "completed")
+        self.assertTrue(retried["schedules"][0]["event"]["deduplicated"])
+        self.assertEqual(
+            core.get_schedule(Database(self.path), "legacy-interval")["next_run_at"],
+            "2026-10-01T09:00:00+00:00",
+        )
+        self.assertEqual(len(core.list_events(Database(self.path))), 1)
+        self.assertEqual(len(core.list_processor_runs(Database(self.path))), 1)
+        self.assertEqual(len(core.list_processor_deliveries(Database(self.path))), 1)
+
+        repeated = self._run_cycle(
+            Database(self.path),
+            "2026-10-01T08:59:59+00:00",
+            ingest_runner=self._succeed,
+        )
+        self.assertEqual(repeated["schedules"], [])
+        self.assertEqual(len(core.list_events(Database(self.path))), 1)
+        self.assertEqual(len(core.list_processor_runs(Database(self.path))), 1)
+        self.assertEqual(len(core.list_processor_deliveries(Database(self.path))), 1)
 
     def test_recovered_calendar_catch_up_occurrence_is_routed_exactly_once(self) -> None:
         core.upsert_calendar_schedule(

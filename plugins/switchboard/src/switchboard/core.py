@@ -1444,9 +1444,7 @@ def execute_due_timer_schedule(
         event_result = _emit_event(
             connection,
             source_id=config["source_id"],
-            external_id=(
-                f"schedule:{schedule_id}:r{row['revision']}:{scheduled_for.isoformat()}"
-            ),
+            external_id=scheduled_for.isoformat(),
             event_type=config["event_type"],
             attributes=attributes,
             occurred_at=scheduled_for.isoformat(),
