@@ -22,3 +22,11 @@ Steps 1.1 and 1.2 are complete and pushed to `main`. Schema v10, retry-aware due
 schedule-owned atomic terminalization, and one internal alert episode per failure streak passed 135
 unit tests and both plugin validators. The configured checkpoint verification contained no commands,
 so it completed as an explicit skip. No release, plugin update, or live state mutation has occurred.
+
+## 2026-10-01T08:37:43Z — phase 2 checkpoint
+
+Steps 2.1 and 2.2 are complete and pushed to `main`. Consistent CLI, doctor, read-only dashboard,
+and topology behavior plus deterministic restart/recovery coverage passed 144 unit tests and both
+plugin validators. The regression suite exposed and fixed interval timer occurrence identity within
+scope. Checkpoint and UI runners had no configured commands, so both completed as explicit skips.
+Independent rendered visual QA is still required before release. No live state changed.
