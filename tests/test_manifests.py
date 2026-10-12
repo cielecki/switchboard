@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -19,9 +20,18 @@ class ManifestTest(unittest.TestCase):
         claude_marketplace = json.loads(
             (root / ".claude-plugin" / "marketplace.json").read_text()
         )
+        pyproject = tomllib.loads((root / "pyproject.toml").read_text())
+        lockfile = tomllib.loads((root / "uv.lock").read_text())
+        locked_package = next(
+            package
+            for package in lockfile["package"]
+            if package["name"] == "agent-switchboard"
+        )
 
         self.assertEqual(codex["name"], "switchboard")
         self.assertEqual(claude["name"], "switchboard")
+        self.assertEqual(pyproject["project"]["version"], __version__)
+        self.assertEqual(locked_package["version"], __version__)
         self.assertEqual(codex["version"], __version__)
         self.assertEqual(claude["version"], __version__)
         self.assertEqual(claude_marketplace["metadata"]["version"], __version__)
@@ -34,6 +44,21 @@ class ManifestTest(unittest.TestCase):
         )
         self.assertTrue((plugin / codex["skills"]).is_dir())
         self.assertTrue((plugin / "bin" / "switchboard").is_file())
+
+    def test_delivery_capacity_is_documented_on_operator_surfaces(self) -> None:
+        root = Path(__file__).parents[1]
+        paths = [
+            root / "README.md",
+            root / "plugins" / "switchboard" / "docs" / "operations.md",
+            root / "plugins" / "switchboard" / "docs" / "supervisor.md",
+        ]
+
+        for path in paths:
+            with self.subTest(path=path):
+                contents = path.read_text()
+                self.assertIn("--delivery-batch", contents)
+                self.assertIn("--delivery-concurrency", contents)
+                self.assertIn("read-only", contents)
 
 
 if __name__ == "__main__":

@@ -32,12 +32,33 @@ The first vertical slice provides:
   and space-filtered queue views;
 - persisted, bounded retry backoff for failed non-stream schedules, with local alert episodes and
   read-only operator visibility;
+- fair per-consumer chat delivery selection and a bounded relay-worker pool, so retries or slow
+  consumers do not block unrelated ready work;
 - an action-oriented dashboard with worker health, decision groups, queue lanes, and run lifecycles;
 - declarative topology planning and idempotent apply through the CLI;
 - self-diagnosis plus verified online SQLite backups.
 
 Existing capture and lead-processing systems can integrate as adapters before any migration or
 replacement. Domain processors remain responsible for their own policy and external writes.
+
+## Release 0.11.7
+
+Switchboard 0.11.7 selects ready wait and processor deliveries fairly across consumers. Repeated
+attempts for an older failing consumer no longer delay a new delivery for a healthy consumer.
+Within each consumer, the supervisor still delivers the oldest ready item first, keeps request IDs
+stable across retries of one delivery generation, and runs only one relay at a time.
+
+The long-running supervisor now executes relays in a bounded worker pool. A slow or timed-out
+relay no longer blocks polling or heartbeats. When another worker is free, it can serve a different
+consumer.
+
+`--delivery-batch` sets the maximum number of new relays that one poll can start and defaults to
+`1`. The new `--delivery-concurrency` option caps active relay workers and defaults to `4`. The
+number of free worker slots may reduce starts below the batch limit. `supervisor once` remains
+synchronous.
+
+This release uses the existing database schema and requires no data migration. Only the CLI can
+change configuration. The bundled web interface remains read-only.
 
 ## Try it
 
@@ -320,24 +341,27 @@ unsupported, incompatibly shared, or unrelated sources. Repeating the command re
 `already-repaired` without writing again. Follow the
 [operations guide](plugins/switchboard/docs/operations.md).
 
-On macOS, install it as a persistent per-user launch agent entirely through the CLI:
+On macOS, install it as a persistent per-user launch agent through the CLI:
 
 ```bash
 switchboard --json service install --relay /absolute/path/to/chats/send-message.py \
   --activate-inactive \
   --accepted-retry 120 \
+  --delivery-batch 1 \
+  --delivery-concurrency 4 \
   --alert-command-json '["/absolute/path/to/local-alert-adapter"]' \
   --alert-after 900
 switchboard --json service status
 ```
 
 The alert command receives one JSON payload on standard input. An outage opens one durable alert
-episode per consumer, absorbs any additional affected deliveries, and emits one recovery after the
-final issue clears. Claims are persisted before invoking the command, so restarts or command
-failures cannot create notification storms. This keeps phone numbers, messenger
-credentials, and machine-specific policy outside the public plugin. The default web address is
-<http://127.0.0.1:8765>. Re-run `service install` after updating the
-plugin so launchd points at the newly installed version. See
+episode per consumer, absorbs any additional affected deliveries, and makes at most one attempt to
+send a recovery notification after the final issue clears. Claims are persisted before invoking
+the command, so restarts or command failures cannot create notification storms. This keeps phone
+numbers, messenger credentials, and machine-specific policy outside the public plugin. The default
+web address is <http://127.0.0.1:8765>. Re-run `service install` after updating the plugin so launchd
+points at the newly installed version. Restate every existing service setting; installation rebuilds
+the launchd configuration instead of merging it. See
 [the supervisor guide](plugins/switchboard/docs/supervisor.md).
 
 ## Plugin marketplace

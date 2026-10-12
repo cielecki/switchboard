@@ -17,7 +17,7 @@
 |-------|------|-------|--------|--------|
 | 1 | 1.1 | Fair candidate selection across consumers | done | 7a3a730 |
 | 2 | 2.1 | Bounded non-blocking delivery workers | done | 967615d |
-| 3 | 3.1 | Release metadata and operator documentation for 0.11.7 | todo | — |
+| 3 | 3.1 | Release metadata and operator documentation for 0.11.7 | done | 746e386 |
 
 ## Goal
 

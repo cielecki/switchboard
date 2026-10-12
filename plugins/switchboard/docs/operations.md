@@ -122,6 +122,35 @@ Do not confuse schedule retry with processor-delivery retry, accepted-wake rearm
 does not promise exactly-once external effects; processor workflows must keep their external writes
 idempotent.
 
+## Delivery dispatch capacity
+
+The long-running supervisor selects ready wait and processor deliveries fairly across consumers,
+then dispatches their relays to a bounded worker pool. `--delivery-batch` limits how many new
+relays one poll can start and defaults to `1`. `--delivery-concurrency` caps active relay workers
+and defaults to `4`.
+The supervisor starts only as many relays as the free worker slots allow, even when the batch limit
+is higher.
+
+The supervisor runs at most one relay per consumer. This preserves oldest-ready-first delivery and
+serialization within that consumer. Request IDs remain stable across retries of one delivery
+generation. `supervisor once` remains synchronous and does not use the worker pool.
+
+Configure both limits through the CLI, including when installing the macOS service:
+
+```bash
+switchboard --json service install --relay /absolute/path/to/chats/send-message.py \
+  --delivery-batch 1 --delivery-concurrency 4
+switchboard --json service status
+```
+
+Version 0.11.7 uses the existing database schema and requires no data migration. A marketplace
+update installs a versioned plugin path. Reinstall the service through the updated CLI and restate
+all existing settings, including the database, relay, host, port, poll, retry, batch, concurrency,
+alert, and activation settings. Installation rebuilds the launchd configuration instead of merging
+it.
+
+The web interface remains read-only and cannot change these limits.
+
 ## Doctor
 
 `switchboard doctor` checks database integrity and schema, adapter paths, schedule failures and
