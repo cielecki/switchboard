@@ -15,7 +15,7 @@
 
 | Phase | Step | Title | Status | Commit |
 |-------|------|-------|--------|--------|
-| 1 | 1.1 | Fair candidate selection across consumers | todo | — |
+| 1 | 1.1 | Fair candidate selection across consumers | done | 6a20505 |
 | 2 | 2.1 | Bounded non-blocking delivery workers | todo | — |
 | 3 | 3.1 | Release metadata and operator documentation for 0.11.7 | todo | — |
 

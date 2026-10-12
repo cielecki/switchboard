@@ -452,6 +452,69 @@ def process_processor_alerts(
     return results
 
 
+def _candidate_attempts(kind: str, delivery: dict[str, Any]) -> list[dict[str, Any]]:
+    if kind == "processor":
+        return delivery.get("current_attempts") or []
+    return delivery.get("attempts") or []
+
+
+def _ready_delivery_candidates(
+    db: Database,
+    *,
+    at: datetime,
+    retry_seconds: int,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Select one ready delivery per consumer in least-recently-served order."""
+    candidates_by_consumer: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+
+    for pending in core.list_deliveries(db, "pending"):
+        delivery = core.get_delivery(db, pending["id"])
+        if _delivery_is_due(delivery, at, retry_seconds):
+            candidates_by_consumer.setdefault(delivery["consumer"], []).append(
+                ("wait", delivery)
+            )
+
+    for pending in core.list_processor_deliveries(db, "pending"):
+        delivery = core.get_processor_delivery(db, pending["id"])
+        if (
+            _delivery_is_due(delivery, at, retry_seconds)
+            and not core.processor_consumer_is_busy(
+                db, delivery["consumer"], exclude_delivery=delivery["id"]
+            )
+        ):
+            candidates_by_consumer.setdefault(delivery["consumer"], []).append(
+                ("processor", delivery)
+            )
+
+    ranked: list[tuple[int, datetime, datetime, str, str, dict[str, Any]]] = []
+    for candidates in candidates_by_consumer.values():
+        kind, representative = min(
+            candidates,
+            key=lambda candidate: (
+                _parse_timestamp(candidate[1]["created_at"]),
+                candidate[1]["id"],
+            ),
+        )
+        attempt_times = [
+            _parse_timestamp(attempt.get("finished_at") or attempt["started_at"])
+            for candidate_kind, candidate in candidates
+            for attempt in _candidate_attempts(candidate_kind, candidate)
+        ]
+        ranked.append(
+            (
+                1 if attempt_times else 0,
+                max(attempt_times) if attempt_times else datetime.min.replace(tzinfo=UTC),
+                _parse_timestamp(representative["created_at"]),
+                representative["id"],
+                kind,
+                representative,
+            )
+        )
+
+    ranked.sort(key=lambda candidate: candidate[:4])
+    return [(kind, delivery) for *_rank, kind, delivery in ranked]
+
+
 def run_cycle(
     db: Database,
     *,
@@ -508,29 +571,12 @@ def run_cycle(
 
     core.sync_processor_deliveries(db)
     if relay is not None:
-        candidates: list[tuple[str, str, dict[str, Any]]] = []
-        for pending in core.list_deliveries(db, "pending"):
-            delivery = core.get_delivery(db, pending["id"])
-            if _delivery_is_due(delivery, cycle_at, delivery_retry_seconds):
-                candidates.append((delivery["created_at"], "wait", delivery))
-
-        for pending in core.list_processor_deliveries(db, "pending"):
-            delivery = core.get_processor_delivery(db, pending["id"])
-            if (
-                _delivery_is_due(delivery, cycle_at, delivery_retry_seconds)
-                and not core.processor_consumer_is_busy(
-                    db, delivery["consumer"], exclude_delivery=delivery["id"]
-                )
-                and not any(
-                    item[1] == "processor"
-                    and item[2]["consumer"] == delivery["consumer"]
-                    for item in candidates
-                )
-            ):
-                candidates.append((delivery["created_at"], "processor", delivery))
-
-        candidates.sort(key=lambda candidate: (candidate[0], candidate[2]["id"]))
-        for _created_at, kind, delivery in candidates[:delivery_batch_size]:
+        candidates = _ready_delivery_candidates(
+            db,
+            at=cycle_at,
+            retry_seconds=delivery_retry_seconds,
+        )
+        for kind, delivery in candidates[:delivery_batch_size]:
             try:
                 if kind == "wait":
                     result = delivery_runner(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import subprocess
 import tempfile
 import threading
 import time
@@ -455,6 +457,210 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(calls, [min(emitted["deliveries"])])
         self.assertEqual(len(result["deliveries"]), 1)
         self.assertEqual(len(core.list_deliveries(self.db, "pending")), 1)
+
+    def test_cycle_favors_fresh_consumer_then_rotates_due_retries(self) -> None:
+        relay = self.root / "send-message.py"
+        relay.touch()
+        retry_started = "2026-01-01T00:00:00+00:00"
+        processor_ids: list[str] = []
+        original_request_ids: dict[str, str] = {}
+
+        for index, created_at in enumerate(
+            (
+                "2025-12-31T23:50:00+00:00",
+                "2025-12-31T23:51:00+00:00",
+            )
+        ):
+            space_id = f"processor-{index}"
+            source_id = f"mail-{index}"
+            processor = f"triage-{index}"
+            core.create_space(self.db, space_id)
+            core.register_source(self.db, source_id, space_id, "mail")
+            core.create_route(
+                self.db,
+                space_id=space_id,
+                name="triage",
+                predicate={"event_type": "message.received"},
+                processor=processor,
+            )
+            core.bind_processor(
+                self.db,
+                space_id=space_id,
+                processor=processor,
+                consumer=f"chat:claude:processor-{index}",
+            )
+            core.emit_event(
+                self.db,
+                source_id=source_id,
+                external_id=f"processor-message-{index}",
+                event_type="message.received",
+                attributes={},
+            )
+            delivery = core.list_processor_deliveries(self.db)[0]
+            request_material = f"{delivery['idempotency_key']}:{delivery['generation']}"
+            request_id = "msg_broker_" + hashlib.sha256(
+                request_material.encode()
+            ).hexdigest()[:32]
+            processor_ids.append(delivery["id"])
+            original_request_ids[delivery["id"]] = request_id
+            with self.db.transaction() as connection:
+                connection.execute(
+                    "UPDATE processor_deliveries SET created_at=? WHERE id=?",
+                    (created_at, delivery["id"]),
+                )
+                connection.execute(
+                    "INSERT INTO processor_delivery_attempts("
+                    "id, delivery_id, request_id, state, started_at, finished_at, detail"
+                    ") VALUES(?,?,?,'failed',?,?,?)",
+                    (
+                        f"seed-attempt-{index}",
+                        delivery["id"],
+                        request_id,
+                        retry_started,
+                        retry_started,
+                        "offline",
+                    ),
+                )
+
+        core.create_space(self.db, "fresh-wait")
+        core.register_source(self.db, "fresh-mail", "fresh-wait", "mail")
+        core.create_wait(
+            self.db,
+            space_id="fresh-wait",
+            consumer="chat:codex:fresh-wait",
+            predicate={"event_type": "message.received"},
+        )
+        fresh = core.emit_event(
+            self.db,
+            source_id="fresh-mail",
+            external_id="fresh-message",
+            event_type="message.received",
+            attributes={},
+        )["deliveries"][0]
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE deliveries SET created_at=? WHERE id=?",
+                ("2026-01-01T00:02:00+00:00", fresh),
+            )
+
+        wait_calls: list[str] = []
+        processor_calls: list[tuple[str, str]] = []
+
+        def wait_runner(db, delivery_id, **kwargs):
+            wait_calls.append(delivery_id)
+            return core.dispatch_delivery(
+                db,
+                delivery_id,
+                **kwargs,
+                runner=lambda command, **_runner_kwargs: subprocess.CompletedProcess(
+                    command, 0, stdout="accepted", stderr=""
+                ),
+            )
+
+        def failing_processor_runner(db, delivery_id, **kwargs):
+            def fail(command, **_runner_kwargs):
+                request_id = command[command.index("--request-id") + 1]
+                processor_calls.append((delivery_id, request_id))
+                return subprocess.CompletedProcess(
+                    command, 1, stdout="", stderr="offline"
+                )
+
+            return core.dispatch_processor_delivery(
+                db, delivery_id, **kwargs, runner=fail
+            )
+
+        first_at = datetime.fromisoformat("2026-01-01T00:03:00+00:00")
+        with patch("switchboard.core.now", return_value=first_at.isoformat()):
+            first = run_cycle(
+                self.db,
+                relay=relay,
+                cli_command=["switchboard"],
+                at=first_at,
+                delivery_batch_size=1,
+                delivery_runner=wait_runner,
+                processor_delivery_runner=failing_processor_runner,
+            )
+        self.assertEqual(wait_calls, [fresh])
+        self.assertEqual(first["processor_deliveries"], [])
+        self.assertEqual(core.get_delivery(self.db, fresh)["state"], "accepted")
+
+        for offset in (0, 61, 122):
+            cycle_at = first_at + timedelta(seconds=offset)
+            with patch("switchboard.core.now", return_value=cycle_at.isoformat()):
+                run_cycle(
+                    self.db,
+                    relay=relay,
+                    cli_command=["switchboard"],
+                    at=cycle_at,
+                    delivery_batch_size=1,
+                    delivery_runner=wait_runner,
+                    processor_delivery_runner=failing_processor_runner,
+                )
+
+        self.assertEqual(
+            [delivery_id for delivery_id, _request_id in processor_calls],
+            [processor_ids[0], processor_ids[1], processor_ids[0]],
+        )
+        self.assertEqual(
+            [
+                request_id
+                for delivery_id, request_id in processor_calls
+                if delivery_id == processor_ids[0]
+            ],
+            [original_request_ids[processor_ids[0]]] * 2,
+        )
+        self.assertEqual(len(core.list_deliveries(self.db)), 1)
+        self.assertEqual(len(core.list_processor_deliveries(self.db)), 2)
+
+    def test_cycle_selects_oldest_eligible_processor_delivery_for_consumer(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_route(
+            self.db,
+            space_id="demo",
+            name="triage",
+            predicate={"event_type": "message.received"},
+            processor="mail-triage",
+        )
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        for index in range(2):
+            core.emit_event(
+                self.db,
+                source_id="mail",
+                external_id=f"message-{index}",
+                event_type="message.received",
+                attributes={},
+            )
+        deliveries = core.list_processor_deliveries(self.db)
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE processor_deliveries SET created_at=? WHERE id=?",
+                ("2026-01-01T00:00:00+00:00", deliveries[0]["id"]),
+            )
+            connection.execute(
+                "UPDATE processor_deliveries SET created_at=? WHERE id=?",
+                ("2025-12-31T23:00:00+00:00", deliveries[1]["id"]),
+            )
+        expected = deliveries[1]["id"]
+        dispatched: list[str] = []
+
+        run_cycle(
+            self.db,
+            relay=self.root / "relay.py",
+            cli_command=["switchboard"],
+            delivery_batch_size=2,
+            processor_delivery_runner=lambda _db, delivery_id, **_kwargs: (
+                dispatched.append(delivery_id)
+                or {"id": delivery_id, "state": "accepted"}
+            ),
+        )
+
+        self.assertEqual(dispatched, [expected])
 
     def test_cycle_rearms_and_dispatches_an_unclaimed_accepted_wake(self) -> None:
         core.create_space(self.db, "demo")
