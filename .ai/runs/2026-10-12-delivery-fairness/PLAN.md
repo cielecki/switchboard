@@ -17,6 +17,7 @@
 |-------|------|-------|--------|--------|
 | 1 | 1.1 | Fair candidate selection across consumers | done | 7a3a730 |
 | 2 | 2.1 | Bounded non-blocking delivery workers | done | 967615d |
+| 2 | 2.2 | Make delivery-worker shutdown quiescent | todo | — |
 | 3 | 3.1 | Release metadata and operator documentation for 0.11.7 | done | cbf9906 |
 
 ## Goal
@@ -76,6 +77,8 @@ restarting the Interactive Mode server.
 - **2.1** Add a bounded persistent delivery-worker pool to `run_forever`, keep `run_once`
   synchronous, prevent duplicate active delivery/consumer launches, terminate timed-out relay
   process groups, and plumb/document `--delivery-concurrency` through CLI and service install.
+- **2.2** Prevent a worker blocked before process spawn from launching a relay after `shutdown()`
+  returns; add a deterministic pre-spawn lock regression and require quiescent shutdown.
 
 ### Phase 3 — Patch release
 
