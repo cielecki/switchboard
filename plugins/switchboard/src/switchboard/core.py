@@ -7,6 +7,7 @@ import shlex
 import sqlite3
 import subprocess
 import sys
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,7 +22,7 @@ from .calendar_schedule import (
     preview_occurrences,
 )
 from .db import SCHEMA_VERSION, Database, decode_json_fields
-from .process import run_bounded
+from .process import ProcessStartCancelled, run_bounded
 
 SCHEDULE_RETRY_DELAYS_SECONDS = (30, 60, 120, 240, 480, 900)
 
@@ -3707,8 +3708,11 @@ def dispatch_processor_delivery(
     activate_inactive: bool = False,
     timeout: int = 30,
     runner: Any = run_bounded,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     db.initialize()
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessStartCancelled("delivery dispatch cancelled during shutdown")
     delivery = get_processor_delivery(db, delivery_id)
     if delivery["state"] in {"accepted", "acknowledged"}:
         return {"id": delivery_id, "state": delivery["state"], "idempotent": True}
@@ -3748,6 +3752,8 @@ def dispatch_processor_delivery(
     if _relay_activates(client, activate_inactive or binding["activate_inactive"]):
         command.append("--activate-if-inactive")
     with db.transaction() as connection:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProcessStartCancelled("delivery dispatch cancelled during shutdown")
         current = connection.execute(
             "SELECT pd.*, pr.state AS run_state, pb.state AS binding_state "
             "FROM processor_deliveries pd "
@@ -3793,9 +3799,14 @@ def dispatch_processor_delivery(
         )
 
     try:
-        result = runner(
-            command, capture_output=True, text=True, timeout=_relay_timeout(client, timeout)
-        )
+        runner_kwargs: dict[str, Any] = {
+            "capture_output": True,
+            "text": True,
+            "timeout": _relay_timeout(client, timeout),
+        }
+        if cancel_event is not None:
+            runner_kwargs["cancel_event"] = cancel_event
+        result = runner(command, **runner_kwargs)
         relay_outcome = _relay_outcome(result)
         error = None if relay_outcome in {"accepted", "delivered"} else (
             f"relay exited {result.returncode} ({relay_outcome}): "
@@ -3864,8 +3875,11 @@ def dispatch_delivery(
     activate_inactive: bool = False,
     timeout: int = 30,
     runner: Any = run_bounded,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     db.initialize()
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessStartCancelled("delivery dispatch cancelled during shutdown")
     delivery = get_delivery(db, delivery_id)
     if delivery["state"] in {"accepted", "acknowledged"}:
         return {"id": delivery_id, "state": delivery["state"], "idempotent": True}
@@ -3880,6 +3894,8 @@ def dispatch_delivery(
     attempt_id = make_id("attempt")
     started_at = now()
     with db.transaction() as connection:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProcessStartCancelled("delivery dispatch cancelled during shutdown")
         connection.execute(
             "INSERT INTO delivery_attempts(id, delivery_id, request_id, state, started_at) "
             "VALUES(?,?,?,'attempting',?)",
@@ -3905,9 +3921,14 @@ def dispatch_delivery(
         command.append("--activate-if-inactive")
 
     try:
-        result = runner(
-            command, capture_output=True, text=True, timeout=_relay_timeout(client, timeout)
-        )
+        runner_kwargs: dict[str, Any] = {
+            "capture_output": True,
+            "text": True,
+            "timeout": _relay_timeout(client, timeout),
+        }
+        if cancel_event is not None:
+            runner_kwargs["cancel_event"] = cancel_event
+        result = runner(command, **runner_kwargs)
         relay_outcome = _relay_outcome(result)
         error = None if relay_outcome in {"accepted", "delivered"} else (
             f"relay exited {result.returncode} ({relay_outcome}): "

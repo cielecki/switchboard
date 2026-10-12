@@ -3,13 +3,24 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 import unittest
 
-from switchboard.process import run_bounded
+from switchboard.process import ProcessStartCancelled, run_bounded
 
 
 class ProcessTest(unittest.TestCase):
+    def test_cancelled_process_does_not_spawn(self) -> None:
+        cancelled = threading.Event()
+        cancelled.set()
+
+        with self.assertRaises(ProcessStartCancelled):
+            run_bounded(
+                [sys.executable, "-c", "raise SystemExit('must not run')"],
+                cancel_event=cancelled,
+            )
+
     def test_timeout_kills_descendant_process_group(self) -> None:
         command = [
             sys.executable,

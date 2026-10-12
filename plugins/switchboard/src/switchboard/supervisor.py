@@ -527,17 +527,19 @@ def _dispatch_delivery_candidate(
     delivery_timeout: int,
     delivery_runner: Callable[..., dict[str, Any]],
     processor_delivery_runner: Callable[..., dict[str, Any]],
+    cancel_event: threading.Event | None = None,
 ) -> tuple[str, dict[str, Any], str | None]:
     try:
         runner = delivery_runner if kind == "wait" else processor_delivery_runner
-        result = runner(
-            db,
-            delivery["id"],
-            relay=relay,
-            cli_command=cli_command,
-            activate_inactive=activate_inactive,
-            timeout=delivery_timeout,
-        )
+        runner_kwargs: dict[str, Any] = {
+            "relay": relay,
+            "cli_command": cli_command,
+            "activate_inactive": activate_inactive,
+            "timeout": delivery_timeout,
+        }
+        if cancel_event is not None:
+            runner_kwargs["cancel_event"] = cancel_event
+        result = runner(db, delivery["id"], **runner_kwargs)
         return kind, result, None
     except Exception as exc:  # noqa: BLE001 - retryable delivery failure
         detail = str(exc)
@@ -599,6 +601,8 @@ class DeliveryWorkers:
         self._active: dict[str, str] = {}
         self._active_lock = threading.Lock()
         self._closed = False
+        self._cancel_event = threading.Event()
+        self._shutdown_join_seconds = 5.0
         self._threads = [
             threading.Thread(
                 target=self._work,
@@ -630,6 +634,7 @@ class DeliveryWorkers:
                 delivery_timeout=self.delivery_timeout,
                 delivery_runner=self.delivery_runner,
                 processor_delivery_runner=self.processor_delivery_runner,
+                cancel_event=self._cancel_event,
             )
             with self._active_lock:
                 self._active.pop(delivery["id"], None)
@@ -679,13 +684,15 @@ class DeliveryWorkers:
             if self._closed:
                 return
             self._closed = True
-        terminate_active_process_groups()
+            terminate_active_process_groups(cancel_event=self._cancel_event)
         for _thread in self._threads:
             self._jobs.put(None)
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + self._shutdown_join_seconds
         for thread in self._threads:
             thread.join(timeout=max(0, deadline - time.monotonic()))
         terminate_active_process_groups()
+        with self._active_lock:
+            self._active.clear()
 
 
 def run_cycle(

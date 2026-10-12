@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -915,6 +916,67 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(request_ids, [request_ids[0], request_ids[0]])
         self.assertEqual(len(core.list_deliveries(self.db)), 1)
         self.assertEqual(core.get_delivery(self.db, delivery_id)["state"], "pending")
+
+    def test_delivery_worker_cannot_start_after_shutdown_returns(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_wait(
+            self.db,
+            space_id="demo",
+            consumer="chat:codex:session-1",
+            predicate={"event_type": "message.received"},
+        )
+        delivery_id = core.emit_event(
+            self.db,
+            source_id="mail",
+            external_id="message-1",
+            event_type="message.received",
+            attributes={},
+        )["deliveries"][0]
+        marker = self.root / "relay-started"
+        relay = self.root / "relay.py"
+        relay.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('started')\n"
+        )
+        transaction_entered = threading.Event()
+        original_transaction = self.db.transaction
+
+        @contextmanager
+        def observed_transaction():
+            if threading.current_thread().name.startswith("switchboard-delivery-"):
+                transaction_entered.set()
+            with original_transaction() as connection:
+                yield connection
+
+        self.db.transaction = observed_transaction  # type: ignore[method-assign]
+        blocker = self.db.connect()
+        blocker.execute("BEGIN IMMEDIATE")
+        self.addCleanup(blocker.close)
+
+        workers = DeliveryWorkers(
+            self.db,
+            relay=relay,
+            cli_command=["switchboard"],
+            concurrency=1,
+            delivery_batch_size=1,
+        )
+        workers._shutdown_join_seconds = 0.05
+        workers.poll()
+        self.assertTrue(transaction_entered.wait(1))
+
+        workers.shutdown()
+        self.assertEqual(workers.active_delivery_ids(), set())
+        self.assertFalse(marker.exists())
+        self.assertEqual(core.get_delivery(self.db, delivery_id)["attempts"], [])
+
+        blocker.rollback()
+        self.wait_until(
+            lambda: not workers._threads[0].is_alive(),
+            "cancelled delivery worker did not exit after the database lock cleared",
+        )
+        self.assertFalse(marker.exists())
+        self.assertEqual(core.get_delivery(self.db, delivery_id)["attempts"], [])
 
     def test_cycle_rearms_and_dispatches_an_unclaimed_accepted_wake(self) -> None:
         core.create_space(self.db, "demo")

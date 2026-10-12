@@ -12,6 +12,10 @@ _active_lock = threading.Lock()
 _active_process_groups: set[int] = set()
 
 
+class ProcessStartCancelled(OSError):
+    pass
+
+
 def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
     if process.poll() is not None:
         return
@@ -33,20 +37,23 @@ def run_bounded(
     env: dict[str, str] | None = None,
     input: str | bytes | None = None,
     check: bool = False,
+    cancel_event: threading.Event | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     """Run a command and terminate its whole descendant process group on timeout."""
     if input is not None and not capture_output:
         raise ValueError("input requires captured subprocess streams")
-    process = subprocess.Popen(
-        list(command),
-        stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE if capture_output else None,
-        stderr=subprocess.PIPE if capture_output else None,
-        text=text,
-        env=env,
-        start_new_session=os.name == "posix",
-    )
     with _active_lock:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProcessStartCancelled("process start cancelled during shutdown")
+        process = subprocess.Popen(
+            list(command),
+            stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture_output else None,
+            stderr=subprocess.PIPE if capture_output else None,
+            text=text,
+            env=env,
+            start_new_session=os.name == "posix",
+        )
         _active_process_groups.add(process.pid)
     try:
         try:
@@ -66,9 +73,13 @@ def run_bounded(
     return result
 
 
-def terminate_active_process_groups() -> None:
+def terminate_active_process_groups(
+    *, cancel_event: threading.Event | None = None
+) -> None:
     """Best-effort cleanup for commands still running when the daemon stops."""
     with _active_lock:
+        if cancel_event is not None:
+            cancel_event.set()
         process_groups = list(_active_process_groups)
     for process_group in process_groups:
         try:
