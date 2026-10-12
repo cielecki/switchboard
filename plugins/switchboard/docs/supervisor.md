@@ -15,9 +15,9 @@ Each cycle:
    accepted wakes that are not acknowledged or claimed within the configured timeout are re-armed
    with the same stable request ID, and legacy databases with multiple accepted wakes per consumer
    are coalesced;
-5. dispatches the oldest eligible wait or processor deliveries, up to the configured per-cycle
-   batch limit, when a chats relay is configured, with at most one in-flight processor wake per
-   consumer;
+5. starts ready wait or processor deliveries in least-recently-served consumer order, up to the
+   configured per-poll batch limit and available delivery-worker slots, with at most one active
+   relay per consumer;
 6. updates local schedule alert episodes after failed scheduled attempts without calling an external
    notifier. Separately, it opens one consumer-level alert episode after one or more processor
    deliveries remain unreachable or unclaimed for the threshold, and sends one recovery after the
@@ -31,9 +31,12 @@ Native `held`, `refused`, `dropped`, `denied`, and `expired` receipts are delive
 remain eligible for retry. Socket acceptance without transcript delivery is provisional; if a
 wait is not acknowledged or a processor has not claimed its run by `--accepted-retry`, Switchboard
 retries the same request ID rather than creating a duplicate wake.
-The default `--delivery-batch 1` keeps source polling and the health heartbeat responsive even when
-the initial queue contains many chat wakes. Increase it only when the relay is known to return
-quickly.
+The persistent supervisor runs chat relays in a bounded worker pool, so a slow or timed-out relay
+does not block schedule polling, the health heartbeat, or a free worker from serving another
+consumer. `--delivery-concurrency` controls the number of relay workers and defaults to `4`.
+`--delivery-batch` remains the maximum number of new relay starts per poll and defaults to `1`;
+starts are additionally bounded by free worker slots. `supervisor once` remains synchronous and
+does not use the worker pool.
 Processor requeues increment a delivery generation, producing a new stable request ID without
 duplicating a prior accepted wake.
 After a long consumer outage, the backlog remains durable without producing one chat message per
@@ -114,7 +117,9 @@ completed run cannot be claimed again.
 
 Only one supervisor may hold a database's lock. `supervisor run` also hosts the read-only HTTP UI.
 SIGINT and SIGTERM cause a clean shutdown and a final `stopped` heartbeat. Interrupted adapter runs
-are marked failed when the next supervisor starts.
+are marked failed when the next supervisor starts. Shutdown terminates descendant process groups
+owned by schedules and relay workers, then briefly joins those workers; it does not manage or stop
+the external Interactive Mode server.
 
 `service install` is currently macOS-only. It writes and loads
 `~/Library/LaunchAgents/io.github.cielecki.switchboard.plist` with `RunAtLoad` and `KeepAlive`, and

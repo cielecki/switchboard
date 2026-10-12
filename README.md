@@ -238,8 +238,13 @@ bounded cadence, terminates a timed-out command's complete descendant process gr
 delivery work per cycle, records its heartbeat and errors, and serves the web UI:
 
 ```bash
-switchboard supervisor run --relay /absolute/path/to/chats/send-message.py --delivery-batch 1
+switchboard supervisor run --relay /absolute/path/to/chats/send-message.py \
+  --delivery-batch 1 --delivery-concurrency 4
 ```
+
+The batch limits new relay starts per poll. The concurrency setting bounds the persistent relay
+worker pool, so one slow consumer does not stop supervisor polling or another consumer's delivery.
+`supervisor once` remains synchronous.
 
 Create a recurring deterministic maintenance wake without embedding policy in Switchboard:
 

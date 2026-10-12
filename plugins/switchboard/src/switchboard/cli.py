@@ -430,6 +430,7 @@ def build_parser() -> argparse.ArgumentParser:
             supervise.add_argument("--host", default="127.0.0.1")
             supervise.add_argument("--port", type=int, default=8765)
             supervise.add_argument("--poll", type=int, default=5)
+            supervise.add_argument("--delivery-concurrency", type=int, default=4)
 
     service = commands.add_parser(
         "service", help="manage the persistent macOS launch agent"
@@ -443,6 +444,7 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--delivery-retry", type=int, default=60)
     install.add_argument("--accepted-retry", type=int, default=120)
     install.add_argument("--delivery-batch", type=int, default=1)
+    install.add_argument("--delivery-concurrency", type=int, default=4)
     install.add_argument("--alert-command-json", type=json_string_array)
     install.add_argument("--alert-after", type=int, default=900)
     service.add_parser("uninstall")
@@ -834,6 +836,7 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
             host=args.host,
             port=args.port,
             poll_seconds=args.poll,
+            delivery_concurrency=args.delivery_concurrency,
             **options,
         )
         return core.supervisor_status(db)
@@ -849,6 +852,7 @@ def dispatch(args: argparse.Namespace, db: Database) -> Any:
                 delivery_retry_seconds=args.delivery_retry,
                 accepted_retry_seconds=args.accepted_retry,
                 delivery_batch_size=args.delivery_batch,
+                delivery_concurrency=args.delivery_concurrency,
                 alert_command=args.alert_command_json,
                 alert_after_seconds=args.alert_after,
                 activate_inactive=args.activate_inactive,

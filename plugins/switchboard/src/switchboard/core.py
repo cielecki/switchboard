@@ -21,6 +21,7 @@ from .calendar_schedule import (
     preview_occurrences,
 )
 from .db import SCHEMA_VERSION, Database, decode_json_fields
+from .process import run_bounded
 
 SCHEDULE_RETRY_DELAYS_SECONDS = (30, 60, 120, 240, 480, 900)
 
@@ -2679,7 +2680,11 @@ def coalesce_processor_deliveries(db: Database, consumer: str | None = None) -> 
 
 
 def recover_unclaimed_processor_deliveries(
-    db: Database, at: str, *, after_seconds: int
+    db: Database,
+    at: str,
+    *,
+    after_seconds: int,
+    exclude_delivery_ids: set[str] | None = None,
 ) -> int:
     """Re-arm wakes accepted by transport but never claimed by their worker.
 
@@ -2690,6 +2695,7 @@ def recover_unclaimed_processor_deliveries(
     if after_seconds < 1:
         raise ValueError("accepted claim timeout must be at least one second")
     threshold = datetime.fromisoformat(at).astimezone(UTC) - timedelta(seconds=after_seconds)
+    excluded = exclude_delivery_ids or set()
     recovered = 0
     with db.transaction() as connection:
         rows = connection.execute(
@@ -2700,6 +2706,8 @@ def recover_unclaimed_processor_deliveries(
             "ORDER BY pd.accepted_at, pd.id",
         ).fetchall()
         for row in rows:
+            if row["id"] in excluded:
+                continue
             accepted_at = datetime.fromisoformat(row["accepted_at"])
             if accepted_at.tzinfo is None:
                 accepted_at = accepted_at.replace(tzinfo=UTC)
@@ -3429,12 +3437,17 @@ def retry_processor_run(db: Database, run_id: str) -> dict[str, Any]:
 
 
 def recover_unacknowledged_deliveries(
-    db: Database, at: str, *, after_seconds: int
+    db: Database,
+    at: str,
+    *,
+    after_seconds: int,
+    exclude_delivery_ids: set[str] | None = None,
 ) -> int:
     """Re-arm accepted wait deliveries that never reached acknowledgement."""
     if after_seconds < 1:
         raise ValueError("accepted acknowledgement timeout must be at least one second")
     threshold = datetime.fromisoformat(at).astimezone(UTC) - timedelta(seconds=after_seconds)
+    excluded = exclude_delivery_ids or set()
     recovered = 0
     with db.transaction() as connection:
         rows = connection.execute(
@@ -3442,6 +3455,8 @@ def recover_unacknowledged_deliveries(
             "AND accepted_at IS NOT NULL ORDER BY accepted_at, id"
         ).fetchall()
         for row in rows:
+            if row["id"] in excluded:
+                continue
             accepted_at = datetime.fromisoformat(row["accepted_at"])
             if accepted_at.tzinfo is None:
                 accepted_at = accepted_at.replace(tzinfo=UTC)
@@ -3691,7 +3706,7 @@ def dispatch_processor_delivery(
     cli_command: list[str],
     activate_inactive: bool = False,
     timeout: int = 30,
-    runner: Any = subprocess.run,
+    runner: Any = run_bounded,
 ) -> dict[str, Any]:
     db.initialize()
     delivery = get_processor_delivery(db, delivery_id)
@@ -3848,7 +3863,7 @@ def dispatch_delivery(
     cli_command: list[str],
     activate_inactive: bool = False,
     timeout: int = 30,
-    runner: Any = subprocess.run,
+    runner: Any = run_bounded,
 ) -> dict[str, Any]:
     db.initialize()
     delivery = get_delivery(db, delivery_id)

@@ -52,6 +52,7 @@ def install_launch_agent(
     delivery_retry_seconds: int = 60,
     accepted_retry_seconds: int = 120,
     delivery_batch_size: int = 1,
+    delivery_concurrency: int = 4,
     activate_inactive: bool = False,
     alert_command: list[str] | None = None,
     alert_after_seconds: int = 900,
@@ -68,9 +69,10 @@ def install_launch_agent(
         or delivery_retry_seconds < 1
         or accepted_retry_seconds < 1
         or delivery_batch_size < 1
+        or delivery_concurrency < 1
         or alert_after_seconds < 1
     ):
-        raise ValueError("service intervals must be at least one second")
+        raise ValueError("service numeric settings must be at least one")
     if alert_command is not None and (
         not alert_command or not Path(alert_command[0]).expanduser().is_file()
     ):
@@ -96,6 +98,8 @@ def install_launch_agent(
         str(accepted_retry_seconds),
         "--delivery-batch",
         str(delivery_batch_size),
+        "--delivery-concurrency",
+        str(delivery_concurrency),
         "--alert-after",
         str(alert_after_seconds),
     ]

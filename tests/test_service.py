@@ -44,6 +44,7 @@ class ServiceTest(unittest.TestCase):
                 cli_command=[str(self.launcher)],
                 relay=self.relay,
                 port=9876,
+                delivery_concurrency=7,
                 alert_command=[str(self.alert), "--mode", "self"],
                 alert_after_seconds=900,
                 runner=self.runner,
@@ -63,6 +64,12 @@ class ServiceTest(unittest.TestCase):
                     payload["ProgramArguments"].index("--accepted-retry") + 1
                 ],
                 "120",
+            )
+            self.assertEqual(
+                payload["ProgramArguments"][
+                    payload["ProgramArguments"].index("--delivery-concurrency") + 1
+                ],
+                "7",
             )
             self.assertIn("--alert-command-json", payload["ProgramArguments"])
             alert_argument = payload["ProgramArguments"][

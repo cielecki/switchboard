@@ -13,6 +13,7 @@ from unittest.mock import patch
 from switchboard import core
 from switchboard.db import Database
 from switchboard.supervisor import (
+    DeliveryWorkers,
     ScheduleWorkers,
     process_processor_alerts,
     run_cycle,
@@ -28,6 +29,14 @@ class SupervisorTest(unittest.TestCase):
         self.db = Database(self.root / "switchboard.sqlite3")
         self.status_script = self.root / "status.py"
         self.status_script.touch()
+
+    def wait_until(self, predicate, message: str) -> None:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        self.fail(message)
 
     def test_due_schedule_runs_once_and_advances(self) -> None:
         discovery_script = self.root / "watch.py"
@@ -661,6 +670,251 @@ class SupervisorTest(unittest.TestCase):
         )
 
         self.assertEqual(dispatched, [expected])
+
+    def test_delivery_workers_do_not_block_an_unrelated_consumer(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_route(
+            self.db,
+            space_id="demo",
+            name="triage",
+            predicate={"event_type": "processor.message"},
+            processor="mail-triage",
+        )
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:slow",
+        )
+        processor_delivery = core.emit_event(
+            self.db,
+            source_id="mail",
+            external_id="processor-message",
+            event_type="processor.message",
+            attributes={},
+        )
+        core.create_wait(
+            self.db,
+            space_id="demo",
+            consumer="chat:codex:healthy",
+            predicate={"event_type": "wait.message"},
+        )
+        wait_delivery = core.emit_event(
+            self.db,
+            source_id="mail",
+            external_id="wait-message",
+            event_type="wait.message",
+            attributes={},
+        )["deliveries"][0]
+        slow_id = core.get_processor_run(
+            self.db, processor_delivery["processor_runs"][0]
+        )["delivery"]["id"]
+        slow_started = threading.Event()
+        release_slow = threading.Event()
+        healthy_completed = threading.Event()
+        relay = self.root / "relay.py"
+        relay.touch()
+
+        def slow_relay(command, **_kwargs):
+            slow_started.set()
+            release_slow.wait(3)
+            return subprocess.CompletedProcess(command, 0, stdout="accepted", stderr="")
+
+        def slow_runner(db, delivery_id, **kwargs):
+            return core.dispatch_processor_delivery(
+                db, delivery_id, **kwargs, runner=slow_relay
+            )
+
+        def healthy_runner(db, delivery_id, **_kwargs):
+            with db.transaction() as connection:
+                connection.execute(
+                    "UPDATE deliveries SET state='accepted' WHERE id=?", (delivery_id,)
+                )
+            healthy_completed.set()
+            return {"id": delivery_id, "state": "accepted"}
+
+        workers = DeliveryWorkers(
+            self.db,
+            relay=relay,
+            cli_command=["switchboard"],
+            concurrency=2,
+            delivery_batch_size=1,
+            delivery_runner=healthy_runner,
+            processor_delivery_runner=slow_runner,
+        )
+        self.addCleanup(lambda: (release_slow.set(), workers.shutdown()))
+
+        workers.poll()
+        self.assertTrue(slow_started.wait(1))
+        slow_delivery = core.get_processor_delivery(self.db, slow_id)
+        self.assertEqual(slow_delivery["state"], "accepted")
+        recovery_at = datetime.fromisoformat(slow_delivery["accepted_at"]) + timedelta(
+            seconds=121
+        )
+        recovery = run_cycle(
+            self.db,
+            relay=None,
+            cli_command=["switchboard"],
+            at=recovery_at,
+            process_schedules=False,
+            active_delivery_ids=workers.active_delivery_ids(),
+        )
+        self.assertEqual(recovery["recovered_unclaimed_processor_deliveries"], 0)
+        self.assertEqual(core.get_processor_delivery(self.db, slow_id)["state"], "accepted")
+        workers.poll()
+
+        self.assertTrue(healthy_completed.wait(1))
+        self.assertFalse(release_slow.is_set())
+        self.assertEqual(core.get_delivery(self.db, wait_delivery)["state"], "accepted")
+
+    def test_delivery_workers_serialize_a_consumer_oldest_first(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_route(
+            self.db,
+            space_id="demo",
+            name="triage",
+            predicate={"event_type": "message.received"},
+            processor="mail-triage",
+        )
+        core.bind_processor(
+            self.db,
+            space_id="demo",
+            processor="mail-triage",
+            consumer="chat:claude:session-1",
+        )
+        for index in range(2):
+            core.emit_event(
+                self.db,
+                source_id="mail",
+                external_id=f"message-{index}",
+                event_type="message.received",
+                attributes={},
+            )
+        deliveries = core.list_processor_deliveries(self.db)
+        with self.db.transaction() as connection:
+            connection.execute(
+                "UPDATE processor_deliveries SET created_at=? WHERE id=?",
+                ("2026-01-01T00:01:00+00:00", deliveries[0]["id"]),
+            )
+            connection.execute(
+                "UPDATE processor_deliveries SET created_at=? WHERE id=?",
+                ("2026-01-01T00:00:00+00:00", deliveries[1]["id"]),
+            )
+        oldest, newest = deliveries[1]["id"], deliveries[0]["id"]
+        release_first = threading.Event()
+        second_started = threading.Event()
+        calls: list[str] = []
+        active = 0
+        max_active = 0
+        guard = threading.Lock()
+
+        def runner(db, delivery_id, **_kwargs):
+            nonlocal active, max_active
+            with guard:
+                calls.append(delivery_id)
+                active += 1
+                max_active = max(max_active, active)
+                call_number = len(calls)
+            if call_number == 1:
+                release_first.wait(3)
+            else:
+                second_started.set()
+            with db.transaction() as connection:
+                connection.execute(
+                    "UPDATE processor_deliveries SET state='acknowledged' WHERE id=?",
+                    (delivery_id,),
+                )
+            with guard:
+                active -= 1
+            return {"id": delivery_id, "state": "acknowledged"}
+
+        workers = DeliveryWorkers(
+            self.db,
+            relay=self.root / "relay.py",
+            cli_command=["switchboard"],
+            concurrency=4,
+            delivery_batch_size=4,
+            processor_delivery_runner=runner,
+        )
+        self.addCleanup(lambda: (release_first.set(), workers.shutdown()))
+
+        workers.poll()
+        self.wait_until(lambda: calls == [oldest], "oldest processor wake did not start")
+        workers.poll()
+        workers.poll()
+        self.assertEqual(calls, [oldest])
+
+        release_first.set()
+        self.wait_until(
+            lambda: core.get_processor_delivery(self.db, oldest)["state"] == "acknowledged",
+            "oldest processor wake did not finish",
+        )
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not second_started.is_set():
+            workers.poll()
+            time.sleep(0.01)
+        self.assertTrue(second_started.is_set())
+        self.assertEqual(calls, [oldest, newest])
+        self.assertEqual(max_active, 1)
+
+    def test_delivery_workers_retry_one_logical_wait_with_stable_request_id(self) -> None:
+        core.create_space(self.db, "demo")
+        core.register_source(self.db, "mail", "demo", "mail")
+        core.create_wait(
+            self.db,
+            space_id="demo",
+            consumer="chat:codex:session-1",
+            predicate={"event_type": "message.received"},
+        )
+        delivery_id = core.emit_event(
+            self.db,
+            source_id="mail",
+            external_id="message-1",
+            event_type="message.received",
+            attributes={},
+        )["deliveries"][0]
+        relay = self.root / "relay.py"
+        relay.touch()
+        request_ids: list[str] = []
+
+        def delivery_runner(db, candidate_id, **kwargs):
+            def fail(command, **_runner_kwargs):
+                request_ids.append(command[command.index("--request-id") + 1])
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="offline")
+
+            return core.dispatch_delivery(db, candidate_id, **kwargs, runner=fail)
+
+        workers = DeliveryWorkers(
+            self.db,
+            relay=relay,
+            cli_command=["switchboard"],
+            concurrency=1,
+            delivery_batch_size=1,
+            delivery_retry_seconds=60,
+            delivery_runner=delivery_runner,
+        )
+        self.addCleanup(workers.shutdown)
+        first_at = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+        with patch("switchboard.core.now", return_value=first_at.isoformat()):
+            workers.poll(first_at)
+            self.wait_until(
+                lambda: len(core.get_delivery(self.db, delivery_id)["attempts"]) == 1,
+                "first wait attempt did not finish",
+            )
+            workers.poll(first_at)
+        second_at = first_at + timedelta(seconds=61)
+        with patch("switchboard.core.now", return_value=second_at.isoformat()):
+            workers.poll(second_at)
+            self.wait_until(
+                lambda: len(core.get_delivery(self.db, delivery_id)["attempts"]) == 2,
+                "second wait attempt did not finish",
+            )
+
+        self.assertEqual(request_ids, [request_ids[0], request_ids[0]])
+        self.assertEqual(len(core.list_deliveries(self.db)), 1)
+        self.assertEqual(core.get_delivery(self.db, delivery_id)["state"], "pending")
 
     def test_cycle_rearms_and_dispatches_an_unclaimed_accepted_wake(self) -> None:
         core.create_space(self.db, "demo")

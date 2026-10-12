@@ -10,6 +10,7 @@ import time
 import unittest
 from pathlib import Path
 
+from switchboard.cli import build_parser
 from switchboard.db import SCHEMA_VERSION
 
 
@@ -167,6 +168,19 @@ class CliTest(unittest.TestCase):
         self.run_cli("init")
 
         self.assertIsNone(self.run_cli("supervisor", "status"))
+
+    def test_delivery_concurrency_defaults_and_overrides(self) -> None:
+        parser = build_parser()
+
+        run_default = parser.parse_args(["supervisor", "run"])
+        service_default = parser.parse_args(["service", "install"])
+        run_override = parser.parse_args(
+            ["supervisor", "run", "--delivery-concurrency", "7"]
+        )
+
+        self.assertEqual(run_default.delivery_concurrency, 4)
+        self.assertEqual(service_default.delivery_concurrency, 4)
+        self.assertEqual(run_override.delivery_concurrency, 7)
 
     def test_add_stream_schedule_keeps_command_as_argv(self) -> None:
         target = Path(self.directory.name) / "watcher-v1"
