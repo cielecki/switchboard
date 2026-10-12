@@ -17,7 +17,7 @@
 |-------|------|-------|--------|--------|
 | 1 | 1.1 | Fair candidate selection across consumers | done | 7a3a730 |
 | 2 | 2.1 | Bounded non-blocking delivery workers | done | 967615d |
-| 2 | 2.2 | Make delivery-worker shutdown quiescent | done | 176e95f |
+| 2 | 2.2 | Make delivery-worker shutdown quiescent | done | 706cfae |
 | 3 | 3.1 | Release metadata and operator documentation for 0.11.7 | done | cbf9906 |
 
 ## Goal
