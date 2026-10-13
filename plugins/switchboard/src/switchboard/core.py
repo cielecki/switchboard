@@ -1893,20 +1893,21 @@ def list_waits(db: Database, state: str | None = None) -> list[dict[str, Any]]:
 def cancel_wait(db: Database, wait_id: str) -> dict[str, Any]:
     db.initialize()
     with db.transaction() as connection:
-        changed = connection.execute(
-            "UPDATE waits SET state='cancelled' WHERE id=? AND state='active'", (wait_id,)
-        ).rowcount
-        if not changed:
+        wait = connection.execute("SELECT state FROM waits WHERE id=?", (wait_id,)).fetchone()
+        if wait is None or wait["state"] not in {"active", "cancelled"}:
             raise ValueError(f"active wait not found: {wait_id}")
         connection.execute(
-            "UPDATE deliveries SET state='cancelled' WHERE wait_id=? AND state='pending'", (wait_id,)
+            "UPDATE waits SET state='cancelled' WHERE id=? AND state='active'", (wait_id,)
         )
+        cancelled_deliveries = connection.execute(
+            "UPDATE deliveries SET state='cancelled' WHERE wait_id=? AND state='pending'", (wait_id,)
+        ).rowcount
         audit(
             connection,
             command="wait.cancel",
             entity_type="wait",
             entity_id=wait_id,
-            payload={},
+            payload={"previous_state": wait["state"], "cancelled_deliveries": cancelled_deliveries},
         )
     return {"id": wait_id, "state": "cancelled"}
 

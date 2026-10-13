@@ -101,6 +101,41 @@ class SwitchboardTest(unittest.TestCase):
         self.assertEqual(core.list_waits(self.db)[0]["state"], "cancelled")
         self.assertEqual(core.list_deliveries(self.db)[0]["state"], "cancelled")
 
+    def test_cancel_already_cancelled_wait_reconciles_only_its_pending_deliveries(self) -> None:
+        waits = [core.create_wait(
+            self.db, space_id="demo", consumer=f"chat:{index}",
+            predicate={"event_type": "message.received"}, repeating=True,
+        ) for index in range(2)]
+        for index in range(3):
+            core.emit_event(self.db, source_id="mail", external_id=f"legacy-{index}",
+                            event_type="message.received", attributes={})
+        own = [d for d in core.list_deliveries(self.db) if d["wait_id"] == waits[0]["id"]]
+        # Reproduce a legacy cancelled wait whose deliveries were not reconciled.
+        with self.db.transaction() as connection:
+            connection.execute("UPDATE waits SET state='cancelled' WHERE id=?", (waits[0]["id"],))
+            connection.execute("UPDATE deliveries SET state='accepted' WHERE id=?", (own[0]["id"],))
+            connection.execute("UPDATE deliveries SET state='acknowledged' WHERE id=?", (own[1]["id"],))
+
+        first = core.cancel_wait(self.db, waits[0]["id"])
+        second = core.cancel_wait(self.db, waits[0]["id"])
+
+        self.assertEqual(first, second)
+        states = {d["id"]: d["state"] for d in core.list_deliveries(self.db)}
+        self.assertEqual(states[own[0]["id"]], "accepted")
+        self.assertEqual(states[own[1]["id"]], "acknowledged")
+        self.assertEqual(states[own[2]["id"]], "cancelled")
+        self.assertTrue(all(d["state"] == "pending" for d in core.list_deliveries(self.db)
+                            if d["wait_id"] == waits[1]["id"]))
+        self.assertEqual(next(w for w in core.list_waits(self.db)
+                              if w["id"] == waits[1]["id"])["state"], "active")
+
+    def test_cancel_unknown_wait_does_not_change_existing_wait(self) -> None:
+        wait = core.create_wait(self.db, space_id="demo", consumer="chat:123", predicate={})
+        with self.assertRaisesRegex(ValueError, "active wait not found"):
+            core.cancel_wait(self.db, "missing-wait")
+        self.assertEqual(core.list_waits(self.db)[0]["id"], wait["id"])
+        self.assertEqual(core.list_waits(self.db)[0]["state"], "active")
+
     def test_first_matching_route_creates_structured_processor_run(self) -> None:
         fallback = core.create_route(
             self.db,
