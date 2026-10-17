@@ -904,6 +904,10 @@ class SupervisorTest(unittest.TestCase):
                 lambda: len(core.get_delivery(self.db, delivery_id)["attempts"]) == 1,
                 "first wait attempt did not finish",
             )
+            self.wait_until(
+                lambda: not workers.active_delivery_ids(),
+                "first wait worker did not release its consumer",
+            )
             workers.poll(first_at)
         second_at = first_at + timedelta(seconds=61)
         with patch("switchboard.core.now", return_value=second_at.isoformat()):
@@ -911,6 +915,10 @@ class SupervisorTest(unittest.TestCase):
             self.wait_until(
                 lambda: len(core.get_delivery(self.db, delivery_id)["attempts"]) == 2,
                 "second wait attempt did not finish",
+            )
+            self.wait_until(
+                lambda: not workers.active_delivery_ids(),
+                "second wait worker did not release its consumer",
             )
 
         self.assertEqual(request_ids, [request_ids[0], request_ids[0]])
