@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import math
 import os
+import re
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +14,64 @@ from .. import core
 from ..db import Database
 from ..process import run_bounded
 from .base import AdapterError, apply_snapshot
+
+
+def _gmail_environment(profile: str, timeout: float) -> dict[str, str]:
+    """One search attempt fits inside the adapter deadline; schedules own retries."""
+    environment = dict(os.environ)
+    try:
+        requested = float(environment.get("GMAIL_TIMEOUT") or "180")
+    except ValueError as exc:
+        raise AdapterError("GMAIL_TIMEOUT must be a finite positive number") from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise AdapterError("inbound timeout must be a finite positive number")
+    if not math.isfinite(requested) or requested <= 0:
+        raise AdapterError("GMAIL_TIMEOUT must be a finite positive number")
+    # Leave setup, ledger persistence and process cleanup a bounded share of the
+    # existing deadline. The default 180-second search still fits a 240-second poll.
+    search_timeout = min(requested, timeout - min(30, timeout / 4))
+    environment.update(
+        {"MAX_POLLS": "1", "INTERVAL": "0", "STOP_AT": "", "PROFILE": profile,
+         "GMAIL_TIMEOUT": f"{search_timeout:g}", "GMAIL_POLL_RETRIES": "1",
+         "GMAIL_RETRY_SLEEP": "0", "INBOUND_GMAIL_DIAGNOSTICS": "1"}
+    )
+    return environment
+
+
+def _gmail_phases(stderr: str) -> list[tuple[str, str]]:
+    return re.findall(
+        r"^INBOUND_GMAIL_PHASE\t(setup|search|search-result|ledger-discover|ledger-done|"
+        r"queue-reconcile|complete)\t([0-9]{1,10})$", stderr[-8000:], re.MULTILINE)
+
+
+def _gmail_failure(stderr: str | bytes | None, *, outcome: str,
+                   timeout: float, search_timeout: str,
+                   phase: str = "gmail-discovery") -> str:
+    """Keep diagnostic categories, never copied commands, mail or credential text."""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    tail = (stderr or "")[-8000:]
+    for prefix, name in (
+        ("Gmail search failed", "gmail-search"),
+        ("Gmail search returned an invalid payload", "gmail-search-result"),
+        ("failed to persist discovery", "ledger-discover"),
+        ("ledger done-ids read failed", "ledger-done"),
+        ("could not reconcile the inbox", "queue-reconcile"),
+    ):
+        if f"inbound-gmail-watch: {prefix}" in tail:
+            phase = name
+    markers = _gmail_phases(tail)
+    phase_start = "unknown"
+    if markers:
+        phase, phase_start = markers[-1]
+    causes = sorted(set(re.findall(
+        r"\b(?:TimeoutError|TimeoutExpired|ConnectionError|URLError|HTTPError|"
+        r"FileNotFoundError|PermissionError|JSONDecodeError)\b", tail)))
+    if "command timed out after " in tail:
+        causes.append("search-timeout")
+    cause = ",".join(causes) or "unspecified"
+    return (f"phase={phase}; phase_started_after={phase_start}s; outcome={outcome}; outer_timeout={timeout:g}s; "
+            f"search_timeout={search_timeout}s; attempts=1; causes={cause}")
 
 
 def _occurred_at(value: object) -> str | None:
@@ -142,16 +203,19 @@ def run_inbound_leads(
             core.finish_adapter_run(db, run["id"], state="failed", detail=detail)
 
     discovery: dict[str, Any] = {"gmail": {"enabled": False}, "slack": {"enabled": False}}
+    gmail_deadline: float | None = None
     if source_mode in {"both", "gmail"} and discovery_script is not None:
         script = Path(discovery_script).expanduser().resolve()
         if not script.is_file():
             fail(f"discovery script not found: {script}")
             raise AdapterError(f"inbound discovery script not found: {script}")
-        environment = dict(os.environ)
-        environment.update(
-            {"MAX_POLLS": "1", "INTERVAL": "0", "STOP_AT": "", "PROFILE": profile}
-        )
         try:
+            environment = _gmail_environment(profile, timeout)
+        except AdapterError as exc:
+            fail(str(exc))
+            raise
+        try:
+            gmail_deadline = time.monotonic() + timeout
             discovered = runner(
                 ["bash", str(script)],
                 capture_output=True,
@@ -160,10 +224,20 @@ def run_inbound_leads(
                 env=environment,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            fail(str(exc))
-            raise AdapterError(f"inbound discovery failed: {exc}") from exc
+            detail = _gmail_failure(
+                (getattr(exc, "stderr", None) or b"")
+                if isinstance(exc, subprocess.TimeoutExpired)
+                else type(exc).__name__,
+                outcome="timeout" if isinstance(exc, subprocess.TimeoutExpired) else "start-error",
+                timeout=timeout, search_timeout=environment["GMAIL_TIMEOUT"],
+            )
+            fail(detail)
+            raise AdapterError(f"inbound discovery failed: {detail}") from exc
         if discovered.returncode != 0:
-            detail = (discovered.stderr or discovered.stdout)[-2000:]
+            detail = _gmail_failure(
+                discovered.stderr, outcome=f"exit-{discovered.returncode}",
+                timeout=timeout, search_timeout=environment["GMAIL_TIMEOUT"],
+            )
             fail(detail)
             raise AdapterError(f"inbound discovery exited {discovered.returncode}: {detail}")
         discovery["gmail"] = {
@@ -171,22 +245,49 @@ def run_inbound_leads(
             "lead_lines": sum(
                 line.startswith("LEAD\t") for line in discovered.stdout.splitlines()
             ),
+            "phases": _gmail_phases(discovered.stderr or ""),
         }
+        counts = re.findall(r"^INBOUND_GMAIL_COUNT\t([0-9]{1,10})$",
+                            (discovered.stderr or "")[-8000:], re.MULTILINE)
+        if counts:
+            discovery["gmail"]["polled_count"] = int(counts[-1])
 
     rows: list[dict[str, Any]] = []
     if source_mode in {"both", "gmail"}:
+        pending_timeout = timeout
+        if gmail_deadline is not None:
+            pending_timeout = gmail_deadline - time.monotonic()
+            if pending_timeout <= 0:
+                detail = _gmail_failure(None, outcome="budget-exhausted", timeout=timeout,
+                                        search_timeout=environment["GMAIL_TIMEOUT"],
+                                        phase="ledger-pending")
+                fail(detail)
+                raise AdapterError(f"inbound ledger read failed: {detail}")
         try:
             pending = runner(
                 [python, str(ledger), "pending", "--profile", profile, "--json"],
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=pending_timeout,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
+            if gmail_deadline is not None:
+                detail = _gmail_failure(
+                    getattr(exc, "stderr", None) if isinstance(exc, subprocess.TimeoutExpired)
+                    else type(exc).__name__,
+                    outcome="timeout" if isinstance(exc, subprocess.TimeoutExpired) else "start-error",
+                    timeout=timeout, search_timeout=environment["GMAIL_TIMEOUT"],
+                    phase="ledger-pending",
+                )
+                fail(detail)
+                raise AdapterError(f"inbound ledger read failed: {detail}") from exc
             fail(str(exc))
             raise AdapterError(f"inbound ledger read failed: {exc}") from exc
         if pending.returncode != 0:
-            detail = (pending.stderr or pending.stdout)[-2000:]
+            detail = (_gmail_failure(
+                pending.stderr, outcome=f"exit-{pending.returncode}", timeout=timeout,
+                search_timeout=environment["GMAIL_TIMEOUT"], phase="ledger-pending",
+            ) if gmail_deadline is not None else (pending.stderr or pending.stdout)[-2000:])
             fail(detail)
             raise AdapterError(f"inbound ledger exited {pending.returncode}: {detail}")
         try:
@@ -195,6 +296,12 @@ def run_inbound_leads(
             rows = json.loads(pending.stdout)
             snapshot_from_pending(rows, profile=profile, space_id=space_id)
         except Exception as exc:
+            if gmail_deadline is not None:
+                detail = _gmail_failure(type(exc).__name__, outcome="invalid-ledger-output",
+                                        timeout=timeout, search_timeout=environment["GMAIL_TIMEOUT"],
+                                        phase="ledger-pending")
+                fail(detail)
+                raise AdapterError(f"inbound ledger read failed: {detail}") from exc
             fail(str(exc))
             raise
 
@@ -234,6 +341,16 @@ def run_inbound_leads(
         snapshot = snapshot_from_pending(
             rows, profile=profile, space_id=space_id, slack_lines=slack_lines
         )
+        if phases := discovery["gmail"].get("phases"):
+            # Source health is the existing read-only diagnostic surface; do not
+            # persist the watcher's arbitrary stderr or message data.
+            snapshot["sources"][0]["detail"] += "; gmail phases: " + ",".join(
+                f"{phase}@{elapsed}s" for phase, elapsed in phases[-16:]
+            )
+            if "polled_count" in discovery["gmail"]:
+                snapshot["sources"][0]["detail"] += (
+                    f"; polled_count={discovery['gmail']['polled_count']}"
+                )
     except Exception as exc:
         fail(str(exc))
         raise

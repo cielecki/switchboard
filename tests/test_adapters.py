@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from switchboard import core
 from switchboard.adapters import (
@@ -124,6 +125,183 @@ class AdapterTest(unittest.TestCase):
         self.assertNotIn("sender", event["attributes"])
         self.assertNotIn("subject", event["attributes"])
         self.assertEqual(event["event_type"], "inbound.lead.pending")
+
+    def test_gmail_poll_uses_one_attempt_inside_outer_deadline(self) -> None:
+        ledger = self.root / "ledger.py"
+        watcher = self.root / "watch.sh"
+        ledger.touch()
+        watcher.touch()
+        for requested, outer, expected in [("", 240, 180), ("580", 240, 210),
+                                            ("180", 4, 3)]:
+            with self.subTest(requested=requested, outer=outer):
+                def runner(command, **kwargs):
+                    if command[0] == "bash":
+                        env = kwargs["env"]
+                        self.assertEqual(float(env["GMAIL_TIMEOUT"]), expected)
+                        self.assertEqual(env["GMAIL_POLL_RETRIES"], "1")
+                        self.assertEqual(env["GMAIL_RETRY_SLEEP"], "0")
+                        self.assertEqual(env["MAX_POLLS"], "1")
+                        self.assertLess(float(env["GMAIL_TIMEOUT"]), kwargs["timeout"])
+                        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+                    return subprocess.CompletedProcess(command, 0, stdout="[]", stderr="")
+
+                with patch.dict("os.environ", {"GMAIL_TIMEOUT": requested,
+                                               "GMAIL_POLL_RETRIES": "3",
+                                               "GMAIL_RETRY_SLEEP": "20"}):
+                    run_inbound_leads(self.db, ledger_script=ledger, profile="fixture",
+                                      discovery_script=watcher, source_mode="gmail",
+                                      timeout=outer, runner=runner)
+
+    def test_gmail_invalid_budgets_fail_without_starting_discovery(self) -> None:
+        ledger = self.root / "ledger.py"
+        watcher = self.root / "watch.sh"
+        ledger.touch()
+        watcher.touch()
+        for requested, outer in [("bad", 240), ("nan", 240), ("inf", 240),
+                                 ("0", 240), ("-1", 240), ("180", 0),
+                                 ("180", float("nan")), ("180", float("inf"))]:
+            with self.subTest(requested=requested, outer=outer):
+                with patch.dict("os.environ", {"GMAIL_TIMEOUT": requested}):
+                    with patch("switchboard.adapters.inbound.run_bounded") as runner:
+                        with self.assertRaisesRegex(AdapterError, "finite positive"):
+                            run_inbound_leads(self.db, ledger_script=ledger, profile="fixture",
+                                              discovery_script=watcher, timeout=outer,
+                                              runner=runner)
+                        runner.assert_not_called()
+                self.assertEqual(core.list_adapter_runs(self.db)[0]["state"], "failed")
+
+    def test_failed_gmail_attempt_preserves_safe_diagnostics_then_next_poll_recovers(self) -> None:
+        ledger = self.root / "ledger.py"
+        watcher = self.root / "watch.sh"
+        ledger.touch()
+        watcher.touch()
+        attempt = 0
+
+        def runner(command, **kwargs):
+            nonlocal attempt
+            if command[0] == "bash":
+                attempt += 1
+                self.assertEqual(kwargs["env"]["GMAIL_POLL_RETRIES"], "1")
+                if attempt == 1:
+                    return subprocess.CompletedProcess(command, 1, stdout="private mail body",
+                        stderr="TimeoutError: password=synthetic-secret\n"
+                               "inbound-gmail-watch: Gmail search failed 1 times in a row; stopping")
+                return subprocess.CompletedProcess(command, 0, stdout="",
+                    stderr="INBOUND_GMAIL_PHASE\tsearch\t0\n"
+                           "INBOUND_GMAIL_PHASE\tledger-discover\t2\n"
+                           "INBOUND_GMAIL_PHASE\tcomplete\t3\npassword=synthetic-secret")
+            return subprocess.CompletedProcess(command, 0, stdout='[{"id":"fixture:one",'
+                '"profile":"fixture","internal_date":"1789902000000"}]', stderr="")
+
+        with patch.dict("os.environ", {"GMAIL_TIMEOUT": "180"}):
+            with self.assertRaisesRegex(AdapterError, "phase=gmail-search.*TimeoutError"):
+                run_inbound_leads(self.db, ledger_script=ledger, profile="fixture",
+                                  discovery_script=watcher, runner=runner)
+            failed = core.list_adapter_runs(self.db)[0]
+            self.assertEqual(failed["state"], "failed")
+            self.assertEqual(failed["emitted_events"], 0)
+            self.assertNotIn("synthetic-secret", failed["detail"])
+            self.assertNotIn("private mail", failed["detail"])
+            recovered = run_inbound_leads(self.db, ledger_script=ledger, profile="fixture",
+                                         discovery_script=watcher, runner=runner)
+        self.assertEqual(attempt, 2)
+        self.assertEqual(recovered["run"]["state"], "completed")
+        self.assertEqual(recovered["run"]["emitted_events"], 1)
+        health = next(source for source in core.list_sources(self.db)
+                      if source["id"] == "inbound/fixture")["health"]
+        self.assertIn("ledger-discover@2s", health["detail"])
+        self.assertNotIn("synthetic-secret", health["detail"])
+
+    def test_gmail_outer_timeout_keeps_bytes_diagnostic_categories_only(self) -> None:
+        ledger = self.root / "ledger.py"
+        watcher = self.root / "watch.sh"
+        ledger.touch()
+        watcher.touch()
+
+        def runner(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"], output="private body",
+                stderr=b"INBOUND_GMAIL_PHASE\tsearch\t0\n"
+                       b"INBOUND_GMAIL_PHASE\tledger-discover\t151\n"
+                       b"INBOUND_GMAIL_PHASE\tpassword=synthetic-secret\t152\n"
+                       b"command timed out after 180s: --token=synthetic-secret\nTimeoutError: secret")
+
+        with patch.dict("os.environ", {"GMAIL_TIMEOUT": "180"}):
+            with self.assertRaisesRegex(AdapterError, "outcome=timeout.*search-timeout") as raised:
+                run_inbound_leads(self.db, ledger_script=ledger, profile="fixture",
+                                  discovery_script=watcher, runner=runner)
+        self.assertNotIn("synthetic-secret", str(raised.exception))
+        self.assertNotIn("private body", str(raised.exception))
+        self.assertIn("phase=ledger-discover; phase_started_after=151s", str(raised.exception))
+        self.assertEqual(core.list_adapter_runs(self.db)[0]["state"], "failed")
+
+    def test_gmail_start_failure_keeps_exception_type_without_private_path(self) -> None:
+        ledger = self.root / "ledger.py"
+        watcher = self.root / "watch.sh"
+        ledger.touch()
+        watcher.touch()
+
+        def runner(*_args, **_kwargs):
+            raise PermissionError("/private/synthetic-secret/command")
+
+        with self.assertRaisesRegex(AdapterError, "outcome=start-error.*PermissionError") as raised:
+            run_inbound_leads(self.db, ledger_script=ledger, profile="fixture",
+                              discovery_script=watcher, runner=runner)
+        self.assertNotIn("synthetic-secret", str(raised.exception))
+
+    def test_gmail_ledger_read_gets_only_remaining_poll_budget(self) -> None:
+        ledger = self.root / "ledger.py"
+        watcher = self.root / "watch.sh"
+        ledger.touch()
+        watcher.touch()
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            if command[0] == "bash":
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+            self.assertEqual(kwargs["timeout"], 40)
+            return subprocess.CompletedProcess(command, 0, stdout="[]", stderr="")
+
+        with patch("switchboard.adapters.inbound.time.monotonic", side_effect=[100, 300]):
+            run_inbound_leads(self.db, ledger_script=ledger, profile="fixture",
+                              discovery_script=watcher, timeout=240, runner=runner)
+        self.assertEqual(len(calls), 2)
+
+        calls.clear()
+        with patch("switchboard.adapters.inbound.time.monotonic", side_effect=[100, 341]):
+            with self.assertRaisesRegex(AdapterError, "phase=ledger-pending.*budget-exhausted"):
+                run_inbound_leads(self.db, ledger_script=ledger, profile="fixture",
+                                  discovery_script=watcher, timeout=240, runner=runner)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(core.list_adapter_runs(self.db)[0]["state"], "failed")
+
+    def test_gmail_pending_failures_never_persist_rows_or_raw_error_text(self) -> None:
+        ledger = self.root / "ledger.py"
+        watcher = self.root / "watch.sh"
+        ledger.touch()
+        watcher.touch()
+        for scenario in ["exit", "timeout", "json", "schema"]:
+            with self.subTest(scenario=scenario):
+                def runner(command, **kwargs):
+                    if command[0] == "bash":
+                        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+                    if scenario == "timeout":
+                        raise subprocess.TimeoutExpired(command, kwargs["timeout"],
+                            output="synthetic-private-row", stderr=b"TimeoutError: synthetic-private-row")
+                    payload = '{broken-json synthetic-private-row' if scenario == "json" else (
+                        '[{"id":"one","profile":"synthetic-private-row"}]')
+                    return subprocess.CompletedProcess(command, 1 if scenario == "exit" else 0,
+                        stdout=payload, stderr="PermissionError: synthetic-private-row")
+
+                with self.assertRaises(AdapterError) as raised:
+                    run_inbound_leads(self.db, ledger_script=ledger, profile="fixture",
+                                      discovery_script=watcher, runner=runner)
+                self.assertIn("phase=ledger-pending", str(raised.exception))
+                self.assertNotIn("synthetic-private-row", str(raised.exception))
+                run = core.list_adapter_runs(self.db)[0]
+                self.assertEqual(run["state"], "failed")
+                self.assertEqual(run["emitted_events"], 0)
+                self.assertNotIn("synthetic-private-row", run["detail"])
 
     def test_inbound_slack_snapshot_keeps_pointers_without_message_content(self) -> None:
         snapshot = snapshot_from_pending(

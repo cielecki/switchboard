@@ -46,6 +46,24 @@ class ProcessTest(unittest.TestCase):
         else:
             self.fail("descendant survived the parent timeout")
 
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group cleanup")
+    def test_timeout_kills_pipe_holder_after_parent_already_exited(self) -> None:
+        command = [sys.executable, "-c", (
+            "import subprocess,sys; "
+            "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+            "print(child.pid, flush=True)"
+        )]
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired) as raised:
+            run_bounded(command, capture_output=True, text=True, timeout=0.2)
+        self.assertLess(time.monotonic() - started, 3)
+        child_pid = int(raised.exception.output.strip())
+        # A killed orphan can briefly be a zombie on Linux; it cannot hold pipes
+        # or perform work, so do not confuse that with a surviving descendant.
+        state = subprocess.run(["ps", "-p", str(child_pid), "-o", "stat="],
+                               capture_output=True, text=True).stdout.strip()
+        self.assertTrue(not state or state.startswith("Z"), state)
+
 
 if __name__ == "__main__":
     unittest.main()

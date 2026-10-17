@@ -41,6 +41,15 @@ The first vertical slice provides:
 Existing capture and lead-processing systems can integrate as adapters before any migration or
 replacement. Domain processors remain responsible for their own policy and external writes.
 
+## Release 0.11.8
+
+Scheduled Gmail discovery uses one bounded search attempt and leaves later retries to the
+schedule. The default 180-second search and 240-second outer limit remain unchanged; larger
+inner limits are capped with setup and cleanup headroom. Failures retain fixed phase/error
+categories without copied mail or credentials. Supporting watchers expose safe phase timing
+in source health after a successful poll. Timeout cleanup also handles a parent that exits
+before a descendant releases captured pipes. See [the adapter contract](plugins/switchboard/docs/adapters.md).
+
 ## Release 0.11.7
 
 Switchboard 0.11.7 selects ready wait and processor deliveries fairly across consumers. Repeated

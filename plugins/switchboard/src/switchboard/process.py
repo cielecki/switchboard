@@ -17,7 +17,9 @@ class ProcessStartCancelled(OSError):
 
 
 def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
-    if process.poll() is not None:
+    # A reaped parent may leave descendants holding captured pipes. On POSIX
+    # the process group still needs termination before communicate() can finish.
+    if os.name != "posix" and process.poll() is not None:
         return
     try:
         if os.name == "posix":

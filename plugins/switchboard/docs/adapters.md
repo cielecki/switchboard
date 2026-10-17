@@ -117,6 +117,28 @@ mode does not read the Gmail ledger, and Gmail-only mode does not advance the Sl
 external command runs in its own process group; a timeout terminates descendants before the
 adapter reports failure.
 
+Gmail discovery has one search attempt per scheduled poll: the adapter sets
+`GMAIL_POLL_RETRIES=1` and `GMAIL_RETRY_SLEEP=0`; the existing schedule retries later failed
+polls. `GMAIL_TIMEOUT` defaults to 180 seconds and is capped at the outer timeout minus a
+reserve of the smaller of 30 seconds or one quarter of that timeout. The default outer
+240-second limit is unchanged. Invalid, nonpositive or nonfinite budgets fail before discovery.
+The reserve allows local setup and ledger work; it does not guarantee an arbitrarily large
+mailbox can finish within the deadline.
+The subsequent `ledger.py pending` read receives only the remaining time on that same
+monotonic poll deadline. Exhaustion fails before starting it; its failures retain fixed
+`ledger-pending` diagnostic categories rather than ledger rows or arbitrary exception text.
+
+The adapter opts into `INBOUND_GMAIL_DIAGNOSTICS=1`. Supporting watchers emit fixed stderr
+markers `INBOUND_GMAIL_PHASE<TAB>phase<TAB>elapsed_seconds` at phase boundaries. Accepted phases
+are `setup`, `search`, `search-result`, `ledger-discover`, `ledger-done`, `queue-reconcile` and
+`complete`; `INBOUND_GMAIL_COUNT<TAB>count` reports only the number of polled messages.
+Successful phase timelines and counts are retained in source health. Older watchers remain
+supported, with the subphase reported as unknown unless a
+recognized failure identifies it. Gmail failures retain only these categories, selected exception
+class names and numeric budgets; raw stderr, stdout, commands and mail are not persisted as
+failure details. `search` means the search helper is running, not proof of which network request
+or local helper step is slow. Failure never imports an empty successful snapshot.
+
 For a migration with an existing Slack cursor, run the first scheduled poll before creating or
 enabling the Slack route and binding. Review or close the historical baseline in Switchboard, then
 enable routing for subsequent mentions. Creating the route first can turn old cursor history into
